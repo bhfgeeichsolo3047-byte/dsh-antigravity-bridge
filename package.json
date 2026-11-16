@@ -1,0 +1,27 @@
+{
+  "name": "dsh-antigravity-bridge",
+  "version": "1.0.0",
+  "description": "Local-network silent multi-agent collaboration bridge between DeepSeek Harness (D) and Google Antigravity (A): includes HTTP micro-batch broker, DSH UI/host plugin (dsh-agy-collab), and Antigravity protocol/skill templates.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "check": "node --check broker/broker.mjs && node --check broker/wait-next-request.mjs && node --check broker/reply-request.mjs && node --check plugin/dsh-agy-collab/lib/index.js && node --check plugin/dsh-agy-collab/client.js && node --check scripts/sync-plugin.mjs && node --check scripts/install.mjs",
+    "install:bridge": "node scripts/install.mjs",
+    "install:dry": "node scripts/install.mjs --dry-run",
+    "sync:plugin": "node scripts/sync-plugin.mjs",
+    "broker": "node broker/broker.mjs",
+    "listen": "node broker/wait-next-request.mjs"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "antigravity",
+    "dsh-plugin",
+    "multi-agent",
+    "collaboration",
+    "mcp"
+  ]
+}

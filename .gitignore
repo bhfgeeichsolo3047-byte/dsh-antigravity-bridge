@@ -1,0 +1,11 @@
+node_modules/
+records.json
+state.json
+history.jsonl
+broker.pid
+last-*.md
+*.log
+*.tmp
+*.bak-*
+.DS_Store
+Thumbs.db

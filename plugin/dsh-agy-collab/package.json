@@ -1,0 +1,42 @@
+{
+  "name": "dsh-agy-collab",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness (D) <-> Antigravity (A) 本地网络后台静默协作插件：在对话框提供自主开关按钮，开启后由 D 后台转达任务、A 负责开局整体规划与最终结果审核，关闭时零干扰。",
+  "type": "module",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "antigravity",
+    "multi-agent",
+    "collaboration"
+  ],
+  "engines": {
+    "node": ">=18",
+    "dsh": ">=0.1.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": false,
+      "inject": []
+    }
+  }
+}
