@@ -6,7 +6,25 @@
 
 ---
 
-## 核心特性
+## 当前状态：仓库代码是 v1，v2 只有设计
+
+本仓库正在从 v1（双 agent + 三阶段 + 四段式回执）升级到 v2（三角色 + 临时工作台 + 状态机）。**两个版本的边界要说清楚：**
+
+| | v1（当前代码） | v2（设计已定，代码未写） |
+|---|---|---|
+| 角色 | D 与 A 两个 | Planner / Executor / Reviewer 三个 |
+| 角色间传什么 | 四段式散文回执 | Workspace 里的结构化文件 |
+| 谁记状态 | `records.json`（broker 侧） | `state.json`（Host 独占写） |
+| broker | 必需 | 可选，只在有角色绑到进程外时才需要 |
+| 设置页 | 无 | 右侧看板第二分页「设置与运行台」 |
+
+**v2 的完整规格在 [`docs/specs/dsh-agy-collab-v2-spec.md`](./docs/specs/dsh-agy-collab-v2-spec.md)**，汇总了八张设计票的全部结论，是实现工作的唯一依据。设置页的可交互原型在 [`docs/prototypes/collab-settings.html`](./docs/prototypes/collab-settings.html)，用浏览器直接打开即可。
+
+下面「核心特性」等章节描述的都是 **v1 现状**，不是 v2 的目标形态。
+
+---
+
+## 核心特性（v1 现状）
 
 1. **严格条件触发与零干扰隔离**
    - **仅对 D 后台转达生效**：只有当 A 收到来自本地总线（`127.0.0.1:18765`）的 `[DSH_BACKEND_RELAY]` / `[DSH_BACKEND_RELAY_BATCH]` 唤醒信号时，A 才进入「只规划、协商与最终审核，不直接动手修改业务代码」的协作角色。用户直接在 Antigravity 对话框交流时不受任何限制。
@@ -36,6 +54,15 @@
 
 ```text
 dsh-antigravity-bridge/
+├── docs/
+│   ├── specs/
+│   │   └── dsh-agy-collab-v2-spec.md   # v2 升级规格（三角色 / 工作台 / 状态机 / 迁移）
+│   ├── prototypes/
+│   │   ├── collab-settings.html    # 设置页可交互原型（浏览器直接打开）
+│   │   └── collab-settings.md      # 原型逐块对照表与视觉令牌出处
+│   ├── research/
+│   │   └── dsh-host-capabilities.md  # DSH 宿主能力勘察（19 条约束 + 未确认项）
+│   └── agents/                     # issue 跟踪、分类标签、领域文档约定
 ├── broker/
 │   ├── broker.mjs                  # 本地 HTTP 消息总线 (127.0.0.1:18765)
 │   ├── wait-next-request.mjs       # Antigravity 后台长轮询静默监听脚本
@@ -116,6 +143,18 @@ node "~/.dsh/agy-collab/wait-next-request.mjs"
 | `/listen` | `GET` | A 长轮询获取单个或微批聚合请求（默认 `batchWindowMs=250`） |
 | `/reply` | `POST` | A 回传 `PLAN_READY` / `CONSULT_ANSWERED` / `APPROVED` / `CHANGES_REQUESTED` |
 | `/history` | `GET` | 获取最近事件流水（最多 6 条） |
+
+---
+
+## 设计文档
+
+| 文档 | 作用 |
+|---|---|
+| [`docs/specs/dsh-agy-collab-v2-spec.md`](./docs/specs/dsh-agy-collab-v2-spec.md) | v2 升级规格：三角色契约、Workspace 文件契约、十状态机、兼容迁移、broker 归属、A 侧模板分发、设置页 |
+| [`docs/research/dsh-host-capabilities.md`](./docs/research/dsh-host-capabilities.md) | DSH 宿主能力的原始勘察，含 19 条约束与未确认项 |
+| [`plugin/dsh-agy-collab/docs/adr/0001-role-isolation-by-permission-tier.md`](./plugin/dsh-agy-collab/docs/adr/0001-role-isolation-by-permission-tier.md) | ADR：角色隔离为什么选「权限档 + 物理工具裁剪」而不是 agentPreset |
+| [`docs/prototypes/collab-settings.html`](./docs/prototypes/collab-settings.html) | 设置页可交互原型 |
+| [`plugin/dsh-agy-collab/GLOSSARY.md`](./plugin/dsh-agy-collab/GLOSSARY.md) | 术语表（Planner / Executor / Reviewer / Workspace / Host） |
 
 ---
 
