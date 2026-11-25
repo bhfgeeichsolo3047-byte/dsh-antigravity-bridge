@@ -13,6 +13,28 @@ Issues and specs for this repo live as GitHub issues in `bhfgeeichsolo3047-byte/
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## Editing an issue body
+
+Try the `deck_issue_*` tools first. On the GitHub backend a whole-body replacement is
+**not supported** — it returns `{"ok":false,"status":"unsupported","reason":"backend-unsupported"}`,
+and passing the `body.digest` from `deck_issue_get` does not change that. A failure here is
+not something to hide: record it, then fall back.
+
+Fallback: `gh issue edit <n> --body-file <path>`. It is a **fallback, not the default**, and
+only three conditions make it safe:
+
+1. **Try the deck tool first and record the failure.** Don't reach for `gh` on the assumption
+   that the deck path will fail — the fallback is unlocked by an observed `backend-unsupported`,
+   not by expectation.
+2. **Re-read the current body immediately before writing.** `gh issue view <n> --json body`, or
+   `deck_issue_get` with `body: "full"` (full text in `data.body.chunks`, digest in
+   `data.body.digest`). Never edit against a body you read earlier in the session — another
+   session may have edited it since, and a whole-body write overwrites that edit silently.
+3. **Read back after writing.** Confirm the `<!-- DSH-IDEMPOTENCY-KEY: ... -->` line still
+   leads the body and the Chinese text is not mangled, then diff what landed against what you
+   wrote (`gh issue view <n> --json body` against your source file). Only the trailing newline
+   should differ.
+
 ## Pull requests as a request surface
 
 **PRs as a request surface: no.**
