@@ -214,7 +214,7 @@ written_at: 2026-11-25T19:52:04+08:00
 {
   "task_id": "t-2026-1125-01",
   "state": "revising",
-  "round": 2,
+  "round": 1,
   "rejection_count": 1,
   "overreach_count": 0,
   "format_violation_count": 0,

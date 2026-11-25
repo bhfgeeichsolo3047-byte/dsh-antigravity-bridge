@@ -74,7 +74,7 @@
 | 格子的四种态：绿✓ 已完成 / 橙「需修改」/ 蓝「进行中」/ 灰淡「未到」 | 状态映射到目录 | 借用现有 `.is-done/.is-active/.is-warn` 视觉 |
 | 小字「04 收所有有返工预算的轮次；06 只收不能再循环的那一次」 | 上限 2 时第 3 轮才写 06；首发通过则 05、06 一并跳过（T8） | **#5 B4 / B3** |
 | 黄框「现在在等：…」 | 谁阻塞了谁 | 这是本原型最想让人一眼看到的东西 |
-| 绿框「审核轮次」= `round = 2 ｜ rejection_count = 1 ｜ 上限 2 ｜ 剩余返工预算 1` | 计数只从 `state.json` 读，**不从 04 的文件数反推** | **#5 B2 / C** |
+| 绿框「审核轮次」= `round = 1 ｜ rejection_count = 1 ｜ 上限 2 ｜ 剩余返工预算 1` | 计数只从 `state.json` 读，**不从 04 的文件数反推** | **#5 B2 / C** |
 | 绿框「状态集合」= 十个状态全列 | `drafting ready running reviewing revising final-review done blocked escalated aborted`，5 阶段只是展示层归并 | **#5 B1** |
 
 ### D · 角色最近动作（现状）
@@ -133,7 +133,7 @@ v1 修掉一处自相矛盾：Executor 行原本写「交付 `03-任务清单/im
 | # | v0 占位位置 | v1 填成 | 依据 |
 |---|---|---|---|
 | 1 | A 区 Planner 行「工具集白名单：可写目录 02、03（待定）」 | 绿框「读写边界」：读 01/03/04/05 ｜ 写 02、03、05 | #5 B6 |
-| 2 | C 区「审核轮次」 | `round = 2 ｜ rejection_count = 1 ｜ 上限 2 ｜ 剩余返工预算 1`，并写明只从 `state.json` 读 | #5 B2 |
+| 2 | C 区「审核轮次」 | `round = 1 ｜ rejection_count = 1 ｜ 上限 2 ｜ 剩余返工预算 1`，并写明只从 `state.json` 读 | #5 B2 |
 | 3 | C 区「状态名」（原为示例「驳回修改中」） | `revising`（十状态之一）+ 绿框列出全部十个与 5 阶段归并 | #5 B1 |
 | 4 | C 区 6 格「N 文件」与状态映射 | 每格直接写文件名（`request.md / plan.md / tasks.md·冻结 / review-r1.md / revision-r1 / final.md`） | #5 A1 |
 | 5 | C 区「04 通过时 05、06 一并跳过」的视觉表达 | 小字改写为「04 收所有有返工预算的轮次；06 只收不能再循环的那一次」+ T8 跳过语义 | #5 B3 / B4 |
@@ -176,7 +176,7 @@ v1 新增两种视觉：绿框 `.settled`（左边框 `rgba(16,185,129,.55)`，�
 - 6 个目录名一字不差：`01-原始任务需求和目的` / `02-执行方案` / `03-任务清单` / `04-审核结果` / `05-修改方案` / `06-最终审核`。
 - 6 个文件名一字不差（#5 A1）：`request.md` / `plan.md` / `tasks.md` / `review-r<N>.md` / `revision-r<N>.md` / `final.md`。
 - 角色名用 `planner` / `executor` / `reviewer`（+ 中文注释），因为 #3 D4 已定名，不再用「主 agent / 规划 agent / 审核 agent」。
-- 轮次数字自洽：`round=2 / rejection_count=1 / 上限 2` → 已写 `review-r1.md` 与 `revision-r1.md`，正在写的是 r1 的修改方案（不是 r2），第 2 轮复审将落 `review-r2.md`。
+- 轮次数字自洽：`round=1 / rejection_count=1 / 上限 2` → 已写 `review-r1.md`，正在写的是 `revision-r1.md`（N = 当前 round = 1），T10 推进后 round 变 2，第 2 轮复审才落 `review-r2.md`。
 
 ---
 
