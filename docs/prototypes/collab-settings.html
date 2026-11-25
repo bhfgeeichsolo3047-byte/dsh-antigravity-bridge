@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A↔D 协作 · 设置与运行台（交互原型 v1）</title>
+<!--
+  原型：可视化设置页 + 工作台状态面板
+  票据：bhfgeeichsolo3047-byte/dsh-antigravity-bridge#6
+  性质：静态原型。零外部依赖、零网络请求、按钮大多不落地。
+  视觉语言抄自 plugin/dsh-agy-collab/client.js（配色 / 字号 / 圆角 / 间距），
+  目的：让人一眼觉得「这就是这个插件里的页面」。
+  主张：承载位置 = 右侧看板里的「设置」分页（与「任务看板」并列同一抽屉）。
+  状态：v1 —— 已按 #5《六目录读写契约与状态机》填实 5 处占位、修正 6 处假文件名、
+  补置顶常驻状态条、角色行改折叠（460px 装不下三行完整绑定）。
+-->
+<style>
+  :root{
+    --bg1:#f9f9f8; --bg2:#ffffff; --bg3:#f6f6f5;
+    --bd:rgba(127,127,127,.22); --bd-s:rgba(127,127,127,.14); --bd-w:rgba(127,127,127,.30);
+    --lbl1:#1a1a1a; --lbl2:#555; --lbl3:#888;
+    --brand:#10b981; --blue:#3b82f6; --amber:#f59e0b; --purple:#8b5cf6; --red:#ef4444;
+    --fill:rgba(127,127,127,.10); --fill2:rgba(127,127,127,.16);
+    --font:-apple-system,"Segoe UI",system-ui,"Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --shadow:-8px 0 28px rgba(0,0,0,.14);
+  }
+  body[data-ds-dark-theme]{
+    --bg1:#1e1d1a; --bg2:#262420; --bg3:#1b1a17;
+    --bd:rgba(255,255,255,.13); --bd-s:rgba(255,255,255,.08); --bd-w:rgba(255,255,255,.20);
+    --lbl1:#ece8df; --lbl2:#c7c2b8; --lbl3:#948f85;
+    --fill:rgba(255,255,255,.08); --fill2:rgba(255,255,255,.13);
+    --shadow:-10px 0 32px rgba(0,0,0,.52);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; font-family:var(--font); background:var(--bg1); color:var(--lbl1);
+    font-size:12px; -webkit-font-smoothing:antialiased;
+  }
+
+  /* ── 原型工具条（评审用，不属于设计） ── */
+  /* 原型工具条放左下角：抽屉在右侧，顶部有分页与置顶状态条，压在上面会挡评审要看的东西 */
+  .proto-bar{
+    position:fixed; left:14px; bottom:14px; z-index:60;
+    display:flex; flex-direction:column; align-items:stretch; gap:5px;
+    padding:7px 9px; border:1px dashed var(--bd-w); border-radius:9px;
+    background:var(--bg2); box-shadow:0 2px 10px rgba(0,0,0,.06);
+    width:118px;
+  }
+  .proto-bar .tag{
+    font-size:10px; font-weight:700; letter-spacing:.3px; color:var(--lbl3);
+    text-transform:uppercase;
+  }
+  .proto-bar button{
+    appearance:none; height:24px; padding:0 9px; border-radius:7px;
+    border:1px solid var(--bd); background:transparent; color:var(--lbl2);
+    font-family:var(--font); font-size:11px; cursor:pointer;
+  }
+  .proto-bar button:hover{background:var(--fill); color:var(--lbl1)}
+  .proto-bar button.on{
+    color:var(--brand); border-color:color-mix(in srgb,var(--brand) 52%,transparent);
+    background:color-mix(in srgb,var(--brand) 14%,var(--bg2)); font-weight:600;
+  }
+
+  /* ── 背景：假装这里是一个 DSH 会话（省略内容，只留骨架） ── */
+  .stage{display:flex; min-height:100vh}
+  .app-ghost{
+    flex:1; min-width:0; padding:26px 30px; display:flex; flex-direction:column; gap:14px;
+    opacity:.5; user-select:none; pointer-events:none;
+  }
+  .ghost-hd{display:flex; align-items:center; gap:9px; font-size:13.5px; font-weight:700}
+  .ghost-hd .dotline{width:1px; height:14px; background:var(--bd)}
+  .ghost-line{height:11px; border-radius:6px; background:var(--fill)}
+  .ghost-line.w80{width:80%} .ghost-line.w60{width:60%} .ghost-line.w92{width:92%}
+  .ghost-box{
+    height:96px; border-radius:11px; border:1px solid var(--bd-s);
+    background:var(--bg2); margin-top:6px;
+  }
+  .ghost-hint{
+    margin-top:auto; font-size:10.5px; color:var(--lbl3); border-top:1px dashed var(--bd);
+    padding-top:10px; letter-spacing:.2px;
+  }
+
+  /* ── 抽屉：真宽 460px，原型可切到 760px 便于评审 ── */
+  .drawer{
+    flex:none; width:460px; min-height:100vh; display:flex; flex-direction:column;
+    background:var(--bg1); border-left:1px solid var(--bd); box-shadow:var(--shadow);
+    transition:width .18s ease;
+  }
+  body.wide .drawer{width:760px}
+
+  .kb-head{
+    flex:none; display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:12px 14px; border-bottom:1px solid var(--bd-s); background:var(--bg2);
+  }
+  .kb-title-wrap{display:flex; flex-direction:column; gap:3px; min-width:0}
+  .kb-title{display:flex; align-items:center; gap:7px; font-size:13.5px; font-weight:700; margin:0}
+  .kb-sub{display:flex; align-items:center; gap:8px; font-size:11px; color:var(--lbl3); flex-wrap:wrap}
+  .kb-actions{display:flex; align-items:center; gap:6px; flex:none}
+  .iconbtn{
+    appearance:none; display:inline-flex; align-items:center; justify-content:center;
+    height:26px; padding:0 8px; border-radius:7px; border:1px solid var(--bd);
+    background:transparent; color:var(--lbl2); font-family:var(--font); font-size:11px; cursor:pointer;
+  }
+  .iconbtn:hover{background:var(--fill); color:var(--lbl1)}
+
+  /* 抽屉内分页：任务看板 / 设置 */
+  .kb-tabs{
+    flex:none; display:flex; gap:4px; padding:3px; margin:10px 14px 0;
+    border-radius:8px; background:var(--fill);
+  }
+  .kb-tab{
+    appearance:none; border:0; background:transparent; flex:1; cursor:pointer;
+    font-family:var(--font); font-size:11px; font-weight:500; color:var(--lbl2);
+    padding:5px 9px; border-radius:6px;
+  }
+  .kb-tab.is-on{
+    background:var(--bg2); color:var(--lbl1); font-weight:600;
+    box-shadow:0 1px 3px rgba(0,0,0,.08);
+  }
+  .kb-tab .lock{font-size:10px; color:var(--lbl3)}
+
+  .kb-body{
+    flex:1; overflow-y:auto; padding:12px 14px 28px;
+    display:flex; flex-direction:column; gap:14px;
+  }
+
+  /* 卡片 / 分节 */
+  .card{
+    border-radius:12px; border:1px solid var(--bd); background:var(--bg2);
+    padding:12px; display:flex; flex-direction:column; gap:10px;
+  }
+  .sec-hd{display:flex; align-items:center; justify-content:space-between; gap:8px}
+  .sec-title{
+    display:flex; align-items:center; gap:6px; font-size:12px; font-weight:700; color:var(--lbl1);
+  }
+  .sec-title .idx{
+    font-size:10px; font-weight:700; color:var(--lbl3); font-family:var(--mono);
+  }
+  .tag{
+    font-size:10.5px; font-weight:600; padding:2px 8px; border-radius:999px;
+    background:var(--fill2); color:var(--lbl2); white-space:nowrap;
+  }
+  .tag.done{background:rgba(16,185,129,.14); color:#10b981}
+  .tag.active{background:rgba(59,130,246,.15); color:#3b82f6}
+  .tag.warn{background:rgba(245,158,11,.16); color:#f59e0b}
+  .tag.review{background:rgba(139,92,246,.14); color:#7c3aed}
+  .tag.off{background:var(--fill2); color:var(--lbl3)}
+  body[data-ds-dark-theme] .tag.review{color:#a78bfa}
+  body[data-ds-dark-theme] .tag.warn{color:#fbbf24}
+
+  .hint{font-size:10.5px; line-height:1.6; color:var(--lbl3)}
+  .hint b{color:var(--lbl2); font-weight:600}
+
+  /* ── 「等 XX 票结论」占位样式（灰虚线 + 角标）──
+     v1 起画面上已无此类占位（#4/#5 结论全部填实）；保留样式，
+     供后续新出现的未定项继续用，语义是「这里等一张票，不是我没画完」 */
+  .pending{
+    border:1px dashed var(--bd-w); border-radius:9px; padding:8px 10px;
+    background:repeating-linear-gradient(135deg,transparent 0 6px,var(--fill) 6px 7px);
+    display:flex; flex-direction:column; gap:5px;
+  }
+  .pending .ph-line{display:flex; align-items:center; justify-content:space-between; gap:8px}
+  .pending .ph-label{
+    font-size:10px; font-weight:700; letter-spacing:.3px; color:var(--lbl3); text-transform:uppercase;
+  }
+  .badge5{
+    flex:none; font-size:9.5px; font-weight:700; letter-spacing:.2px;
+    padding:1px 6px; border-radius:5px; color:var(--lbl2);
+    background:var(--fill2); border:1px dashed var(--bd-w); white-space:nowrap;
+  }
+  .ph-value{font-size:11px; color:var(--lbl2); font-family:var(--mono)}
+
+  /* ── 已定项（#5 填实后替代灰虚线占位） ── */
+  .settled{
+    border:1px solid var(--bd-s); border-left:2px solid rgba(16,185,129,.55);
+    border-radius:9px; padding:8px 10px; background:var(--bg2);
+    display:flex; flex-direction:column; gap:5px;
+  }
+  .settled .sh-line{display:flex; align-items:center; justify-content:space-between; gap:8px}
+  .settled .sh-label{
+    font-size:10px; font-weight:700; letter-spacing:.3px; color:var(--lbl3); text-transform:uppercase;
+  }
+  .badgeS{
+    flex:none; font-size:9.5px; font-weight:700; letter-spacing:.2px;
+    padding:1px 6px; border-radius:5px; color:#0f9d76;
+    background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.32); white-space:nowrap;
+  }
+  body[data-ds-dark-theme] .badgeS{color:#34d399}
+  .sh-value{font-size:10.5px; color:var(--lbl2); font-family:var(--mono); line-height:1.55}
+  .chip.on{
+    background:rgba(245,158,11,.18); color:#b45309;
+    border-color:rgba(245,158,11,.45); font-weight:700;
+  }
+  body[data-ds-dark-theme] .chip.on{color:#fbbf24}
+
+  /* ── 置顶常驻状态条：不随滚动 ── */
+  .pinbar{
+    flex:none; display:flex; align-items:center; gap:7px;
+    padding:6px 14px 7px; border-bottom:1px solid var(--bd-s); background:var(--bg2);
+    overflow:hidden;
+  }
+  .pinbar .pdot{
+    flex:none; width:6px; height:6px; border-radius:50%;
+    background:var(--amber); box-shadow:0 0 6px var(--amber);
+  }
+  .pinbar .ptask{font-family:var(--mono); font-size:10px; color:var(--lbl2); flex:none}
+  body:not(.wide) .pinbar .ptask{display:none}
+  .pinbar .pstate{font-family:var(--mono); font-size:10px; font-weight:700; color:var(--amber); flex:none}
+  body[data-ds-dark-theme] .pinbar .pstate{color:#fbbf24}
+  .pinbar .pcount{font-size:10px; color:var(--lbl3); flex:none}
+  .pinbar .pwhere{
+    flex:1; min-width:0; font-size:10px; color:var(--lbl2);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+
+  /* ── 角色行 ── */
+  .role-row{
+    border-radius:9px; border:1px solid var(--bd-s); background:var(--bg3);
+    padding:0; overflow:hidden;
+  }
+  .role-row > summary.role-line{
+    display:flex; align-items:center; gap:8px; padding:9px 10px;
+    list-style:none; cursor:pointer;
+  }
+  .role-row > summary.role-line::-webkit-details-marker{display:none}
+  .role-row > summary.role-line:hover{background:var(--fill)}
+  .role-row[open] > summary.role-line{border-bottom:1px dashed var(--bd-s); background:var(--fill)}
+  .role-name{display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:700; flex:none}
+  .role-name .n{font-family:var(--mono); font-size:10px; color:var(--lbl3)}
+  .role-brief{
+    flex:1; min-width:0; font-size:10px; color:var(--lbl3);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .role-chev{flex:none; font-size:9.5px; color:var(--lbl3)}
+  .role-chev::after{content:"展开"}
+  .role-row[open] .role-chev::after{content:"收起"}
+  .role-row[open] .role-chev{color:var(--lbl2)}
+  .role-body{padding:9px 10px; display:flex; flex-direction:column; gap:8px}
+  .role-id{display:flex; flex-direction:column; gap:3px; min-width:0}
+  .role-duty{font-size:10px; color:var(--lbl3); line-height:1.5}
+  .role-fields{display:flex; flex-direction:column; gap:7px; min-width:0}
+  body.wide .role-body .role-fields{display:grid; grid-template-columns:1fr 1fr; gap:7px}
+  .field{display:flex; flex-direction:column; gap:3px; min-width:0}
+  .field-label{
+    font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; color:var(--lbl3);
+  }
+  select, input[type="text"]{
+    appearance:none; width:100%; height:27px; padding:0 8px; border-radius:7px;
+    border:1px solid var(--bd); background:var(--bg2); color:var(--lbl1);
+    font-family:var(--font); font-size:11px; cursor:pointer;
+  }
+  select{background-image:none}
+  input[type="text"]{cursor:text; font-family:var(--mono); font-size:10.5px}
+  select:disabled, input:disabled{
+    opacity:.72; cursor:not-allowed; background:var(--fill);
+    border-style:dashed; color:var(--lbl2);
+  }
+  .chipset{display:flex; align-items:center; gap:4px; flex-wrap:wrap}
+  .chip{
+    font-size:10px; font-family:var(--mono); padding:1.5px 6px; border-radius:5px;
+    background:var(--fill2); color:var(--lbl2); border:1px solid transparent;
+  }
+  .chip.ro{background:rgba(16,185,129,.12); color:#0f9d76; border-color:rgba(16,185,129,.28)}
+  .chip.denied{
+    color:var(--lbl3); text-decoration:line-through; background:transparent;
+    border:1px dashed var(--bd-w);
+  }
+  body[data-ds-dark-theme] .chip.ro{color:#34d399}
+  .lockline{
+    display:flex; align-items:center; gap:5px; font-size:10px; color:var(--lbl3);
+  }
+  .lockline .k{font-weight:700; color:var(--lbl2)}
+  .warn-note{
+    display:flex; gap:6px; align-items:flex-start; font-size:10px; line-height:1.55;
+    padding:6px 8px; border-radius:7px; border:1px dashed rgba(245,158,11,.45);
+    background:rgba(245,158,11,.10); color:#b45309;
+  }
+  body[data-ds-dark-theme] .warn-note{color:#fbbf24}
+
+  /* ── 开关 / 分段 / 步进 ── */
+  .row{display:flex; align-items:center; justify-content:space-between; gap:10px}
+  .row-txt{display:flex; flex-direction:column; gap:2px; min-width:0}
+  .row-name{font-size:11.5px; font-weight:600}
+  .row-sub{font-size:10px; color:var(--lbl3); line-height:1.45}
+  .sw{
+    flex:none; width:34px; height:19px; border-radius:999px; border:1px solid var(--bd);
+    background:var(--fill); position:relative; cursor:pointer; padding:0;
+    transition:all .16s ease;
+  }
+  .sw::after{
+    content:""; position:absolute; top:2px; left:2px; width:13px; height:13px;
+    border-radius:50%; background:var(--bg2); border:1px solid var(--bd-w);
+    transition:all .16s ease;
+  }
+  .sw[aria-checked="true"]{
+    background:color-mix(in srgb,var(--brand) 22%,var(--bg2));
+    border-color:color-mix(in srgb,var(--brand) 55%,transparent);
+  }
+  .sw[aria-checked="true"]::after{
+    left:17px; background:var(--brand); border-color:var(--brand);
+    box-shadow:0 0 6px color-mix(in srgb,var(--brand) 70%,transparent);
+  }
+  .seg{display:inline-flex; gap:3px; padding:3px; border-radius:8px; background:var(--fill)}
+  .seg button{
+    appearance:none; border:0; background:transparent; cursor:pointer;
+    font-family:var(--font); font-size:10.5px; color:var(--lbl2);
+    padding:3px 8px; border-radius:6px;
+  }
+  .seg button.on{background:var(--bg2); color:var(--lbl1); font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .stepper{display:inline-flex; align-items:center; gap:6px}
+  .stepper button{
+    appearance:none; width:22px; height:22px; border-radius:6px; border:1px solid var(--bd);
+    background:transparent; color:var(--lbl2); font-size:12px; line-height:1; cursor:pointer;
+  }
+  .stepper button:hover{background:var(--fill)}
+  .stepper .val{
+    min-width:22px; text-align:center; font-family:var(--mono); font-size:12px; font-weight:700;
+  }
+  .btnrow{display:flex; gap:6px; flex-wrap:wrap}
+  .btn{
+    appearance:none; height:27px; padding:0 10px; border-radius:7px;
+    border:1px solid var(--bd); background:var(--bg2); color:var(--lbl1);
+    font-family:var(--font); font-size:11px; font-weight:500; cursor:pointer;
+    display:inline-flex; align-items:center; gap:5px;
+  }
+  .btn:hover{background:var(--fill)}
+  .btn.primary{
+    border-color:color-mix(in srgb,var(--brand) 55%,transparent);
+    background:color-mix(in srgb,var(--brand) 13%,var(--bg2));
+    color:#0b7f5e; font-weight:600;
+  }
+  body[data-ds-dark-theme] .btn.primary{color:#34d399}
+  .btn.ghost{background:transparent; color:var(--lbl2)}
+
+  /* ── 现状 / 配置的分界 ── */
+  .divider{
+    display:flex; align-items:center; gap:8px; margin:2px 0 0;
+  }
+  .divider .line{flex:1; height:1px; background:var(--bd)}
+  .divider .txt{
+    font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase;
+    color:var(--lbl3); white-space:nowrap;
+  }
+  .realm{
+    border-radius:12px; padding:2px; border:1px solid transparent;
+  }
+  .realm.now{
+    background:linear-gradient(180deg,color-mix(in srgb,var(--blue) 6%,transparent),transparent 60%);
+    border-color:color-mix(in srgb,var(--blue) 22%,transparent);
+  }
+  .realm-caption{
+    display:flex; align-items:center; gap:6px; padding:7px 10px 8px;
+    font-size:10px; color:var(--lbl3);
+  }
+  .realm-caption b{color:var(--blue); font-weight:700}
+
+  /* ── 运行台 ── */
+  .now-top{display:flex; align-items:flex-start; justify-content:space-between; gap:10px}
+  .now-task{display:flex; flex-direction:column; gap:4px; min-width:0}
+  .now-task .tid{font-family:var(--mono); font-size:11px; font-weight:700}
+  .now-task .tpath{
+    font-family:var(--mono); font-size:9.5px; color:var(--lbl3);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .now-state{display:flex; flex-direction:column; align-items:flex-end; gap:4px; flex:none}
+  .state-name{font-size:12px; font-weight:700; color:var(--amber)}
+  body[data-ds-dark-theme] .state-name{color:#fbbf24}
+
+  .grid6{display:grid; grid-template-columns:repeat(3,1fr); gap:6px}
+  body.wide .grid6{grid-template-columns:repeat(6,1fr)}
+  .cell{
+    border-radius:9px; border:1px solid var(--bd); background:var(--bg3);
+    padding:6px 7px; display:flex; flex-direction:column; gap:2px; min-width:0;
+  }
+  .cell.is-done{
+    border-color:rgba(16,185,129,.45);
+    background:color-mix(in srgb,#10b981 9%,var(--bg3));
+  }
+  .cell.is-active{
+    border-color:var(--blue); background:color-mix(in srgb,#3b82f6 12%,var(--bg3));
+    box-shadow:0 0 0 2px rgba(59,130,246,.18);
+  }
+  .cell.is-warn{
+    border-color:rgba(245,158,11,.6); background:color-mix(in srgb,#f59e0b 12%,var(--bg3));
+  }
+  .cell.is-pending{opacity:.62}
+  .cell .cstep{
+    display:flex; align-items:center; justify-content:space-between; gap:4px;
+    font-size:10px; font-weight:700; color:var(--lbl3);
+  }
+  .cell .cstep .n{font-family:var(--mono); letter-spacing:.4px}
+  .cell.is-done .cstep{color:#10b981}
+  .cell.is-active .cstep{color:var(--blue)}
+  .cell.is-warn .cstep{color:var(--amber)}
+  .cell .cname{font-size:10.5px; font-weight:600; line-height:1.3; word-break:break-all}
+  .cell .cmeta{font-size:9.5px; color:var(--lbl3); font-family:var(--mono)}
+
+  .waitbox{
+    border-radius:9px; padding:8px 10px; display:flex; flex-direction:column; gap:5px;
+    border:1px dashed rgba(245,158,11,.5); background:rgba(245,158,11,.11);
+  }
+  .waitbox .wh{display:flex; align-items:center; gap:6px; font-size:11px; font-weight:700; color:#b45309}
+  body[data-ds-dark-theme] .waitbox .wh{color:#fbbf24}
+  .waitbox .wd{font-size:10.5px; line-height:1.6; color:var(--lbl2)}
+  .waitbox .wd code{font-family:var(--mono); font-size:10px; background:var(--fill2); padding:0 3px; border-radius:3px}
+
+  .actors{display:flex; flex-direction:column; gap:0}
+  .actor{
+    display:flex; align-items:center; gap:8px; padding:7px 0;
+    border-bottom:1px dashed var(--bd-s);
+  }
+  .actor:last-child{border-bottom:0}
+  .actor .adot{
+    flex:none; width:7px; height:7px; border-radius:50%; box-sizing:border-box;
+    border:1.5px solid currentColor; background:transparent;
+  }
+  .actor.done .adot{background:currentColor; box-shadow:0 0 6px currentColor}
+  .actor.plan{color:#3b82f6}
+  .actor.exec{color:#10b981}
+  .actor.rev{color:#8b5cf6}
+  .actor.idle{color:var(--lbl3)}
+  .actor .awho{font-size:10.5px; font-weight:700; color:var(--lbl1); flex:none; width:74px}
+  .actor .adid{font-size:10.5px; color:var(--lbl2); flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .actor .atime{font-size:10px; color:var(--lbl3); font-family:var(--mono); flex:none}
+
+  .files{display:flex; flex-direction:column; gap:0}
+  .frow{
+    display:flex; align-items:center; gap:7px; padding:5px 0; border-bottom:1px dashed var(--bd-s);
+  }
+  .frow:last-child{border-bottom:0}
+  .frow .fdir{
+    font-family:var(--mono); font-size:9.5px; color:var(--lbl3); width:26px; flex:none;
+  }
+  .frow .fname{font-family:var(--mono); font-size:10px; color:var(--lbl1); flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .frow .fsize{font-size:9.5px; color:var(--lbl3); font-family:var(--mono); flex:none}
+  .frow .fro{font-size:9px; color:var(--lbl3); flex:none}
+  .empty{
+    padding:16px 12px; text-align:center; border-radius:10px; border:1px dashed var(--bd-w);
+    color:var(--lbl3); font-size:11px; line-height:1.6;
+  }
+  .footnote{
+    font-size:10px; line-height:1.65; color:var(--lbl3);
+    border-top:1px dashed var(--bd); padding-top:9px;
+  }
+  .footnote code{font-family:var(--mono); font-size:9.5px; background:var(--fill2); padding:0 3px; border-radius:3px}
+</style>
+</head>
+<body>
+<!-- 伪造一个会话背景，说明抽屉压在应用之上 -->
+<div class="stage">
+  <div class="app-ghost" aria-hidden="true">
+    <div class="ghost-hd">
+      <span>dsh-antigravity-bridge</span><span class="dotline"></span><span>会话</span>
+    </div>
+    <div class="ghost-line w80"></div>
+    <div class="ghost-line w92"></div>
+    <div class="ghost-line w60"></div>
+    <div class="ghost-box"></div>
+    <div class="ghost-line w92"></div>
+    <div class="ghost-line w80"></div>
+    <div class="ghost-hint">背景是占位骨架：原型只关心右侧抽屉里的「设置」分页。真实抽屉宽 460px，评审时可切到 760px 看宽屏形态。</div>
+  </div>
+
+  <aside class="drawer" role="complementary" aria-label="A↔D 协作 设置与运行台">
+    <!-- 抽屉头，沿用看板现有头部结构 -->
+    <header class="kb-head">
+      <div class="kb-title-wrap">
+        <h1 class="kb-title">
+          <span>A↔D 协作</span>
+          <span class="tag done">协作中</span>
+        </h1>
+        <div class="kb-sub">
+          <span>worker · 本地</span>
+          <span>·</span>
+          <span>broker 未启动（纯进程内）</span>
+        </div>
+      </div>
+      <div class="kb-actions">
+        <button class="iconbtn" type="button" title="刷新（原型不落地）">刷新</button>
+        <button class="iconbtn" type="button" title="收起看板">收起</button>
+      </div>
+    </header>
+
+    <!-- 同一抽屉内的两个分页：看板 / 设置。设置页里再分「配置」与「现状」两段，同一页滚动 -->
+    <nav class="kb-tabs" role="tablist" aria-label="抽屉分页">
+      <button class="kb-tab" type="button" role="tab" aria-selected="false">任务看板</button>
+      <button class="kb-tab is-on" type="button" role="tab" aria-selected="true">设置与运行台</button>
+    </nav>
+
+    <!-- 置顶常驻状态条：滚动时不消失，任何分页都看得见当前任务卡在哪 -->
+    <div class="pinbar" role="status">
+      <span class="pdot"></span>
+      <span class="ptask">t-2026-1125-01</span>
+      <span class="pstate">revising</span>
+      <span class="pcount">驳回 1 / 2</span>
+      <span class="pwhere">等 Planner 写完 05/revision-r1.md → Executor 改 → Reviewer 复审</span>
+    </div>
+
+    <div class="kb-body">
+
+      <!-- ══════════ 配置区 ══════════ -->
+      <section class="card" aria-labelledby="sec-role">
+        <div class="sec-hd">
+          <div class="sec-title" id="sec-role"><span class="idx">A</span>角色绑定</div>
+          <span class="tag off">写入 state.json</span>
+        </div>
+        <div class="hint">
+          角色 = <b>权限档 × 载体绑定</b>。同档位内可任意换后端，<b>不跨档位</b>；
+          默认全部进程内、零依赖可用，外部载体是可选增强。
+        </div>
+
+        <!-- Planner -->
+        <details class="role-row">
+          <summary class="role-line">
+            <span class="role-name"><span class="n">planner</span>规划者</span>
+            <span class="role-brief">进程内 · 继承会话默认 · 只写 02/03/05</span>
+            <span class="role-chev"></span>
+          </summary>
+          <div class="role-body">
+          <div class="role-id">
+            <div class="role-duty">拆解任务、写执行方案与任务清单；<b>不能审核自己</b>。每次冷调用，无历史。</div>
+          </div>
+          <div class="role-fields">
+            <div class="field">
+              <label class="field-label" for="planner-carrier">载体</label>
+              <select id="planner-carrier">
+                <option>进程内 · ctx.agents.create</option>
+                <option>外部 · ACP 端点</option>
+                <option>外部 · Codex CLI</option>
+                <option>外部 · Claude CLI</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="planner-model">模型</label>
+              <select id="planner-model">
+                <option>继承会话默认</option>
+                <option>deepseek-v4</option>
+                <option>claude-sonnet-4.6</option>
+              </select>
+            </div>
+          </div>
+          <div class="settled">
+            <div class="sh-line">
+              <span class="sh-label">读写边界</span>
+              <span class="badgeS">#5 B6 已定</span>
+            </div>
+            <div class="sh-value">读 01 / 03 / 04 / 05 ｜ 写 02 plan.md、03 tasks.md、05 revision-r&lt;N&gt;.md</div>
+            <div class="hint" style="font-size:10px;margin:0">
+              无 bash、无仓库写通道；<b>03 全流程只写一次，写完冻结</b>——这是 Reviewer 每轮拿到同一份需求的支点。
+            </div>
+          </div>
+          </div>
+        </details>
+
+        <!-- Executor -->
+        <details class="role-row">
+          <summary class="role-line">
+            <span class="role-name"><span class="n">executor</span>执行者</span>
+            <span class="role-brief">当前会话 · 固定不可换 · 唯一有仓库写权限</span>
+            <span class="role-chev"></span>
+          </summary>
+          <div class="role-body">
+          <div class="role-id">
+            <div class="role-duty">唯一有仓库写权限的角色。就是用户正看着的这个会话。</div>
+          </div>
+          <div class="role-fields">
+            <div class="field">
+              <label class="field-label" for="exec-carrier">载体</label>
+              <select id="exec-carrier" disabled>
+                <option>当前会话 · 固定不可更换</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="exec-model">模型</label>
+              <select id="exec-model" disabled>
+                <option>跟随当前会话</option>
+              </select>
+            </div>
+          </div>
+          <div class="lockline"><span class="k">锁定理由：</span>允许换到别处＝允许在看不见的地方改你的文件。</div>
+          <div class="settled">
+            <div class="sh-line">
+              <span class="sh-label">六目录边界</span>
+              <span class="badgeS">#5 B6 已定</span>
+            </div>
+            <div class="sh-value">读 全部 ｜ 写 <b>不写任何六目录文件</b>，只写仓库产物</div>
+            <div class="hint" style="font-size:10px;margin:0">
+              想改需求的唯一合法路径是判阻塞（T7 <code>running → blocked</code>），不能自己缩需求。
+            </div>
+          </div>
+          </div>
+        </details>
+
+        <!-- Reviewer -->
+        <details class="role-row">
+          <summary class="role-line">
+            <span class="role-name"><span class="n">reviewer</span>审核者</span>
+            <span class="role-brief">只读 · 只判是否达成 · 只写 04/06</span>
+            <span class="role-chev"></span>
+          </summary>
+          <div class="role-body">
+          <div class="role-id">
+            <div class="role-duty">只读需求、只判是否达成，<b>不自主做额外动作</b>。每次冷调用，无历史。</div>
+          </div>
+          <div class="role-fields">
+            <div class="field">
+              <label class="field-label" for="rev-carrier">载体</label>
+              <select id="rev-carrier">
+                <option>进程内 · ctx.agents.create（只读工具集）</option>
+                <option>外部 · ACP 端点</option>
+                <option>外部 · Codex CLI</option>
+                <option>外部 · Claude CLI</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="rev-model">模型</label>
+              <select id="rev-model">
+                <option>继承会话默认</option>
+                <option>deepseek-v4</option>
+                <option>claude-sonnet-4.6</option>
+              </select>
+            </div>
+          </div>
+        <div class="field">
+          <div class="field-label">工具集 · 只读，不可编辑</div>
+          <div class="chipset">
+            <span class="chip ro">read</span>
+            <span class="chip ro">glob</span>
+            <span class="chip ro">grep</span>
+            <span class="chip denied">write</span>
+            <span class="chip denied">edit</span>
+            <span class="chip denied">bash</span>
+          </div>
+        </div>
+        <div class="warn-note">
+          <span>⚠</span>
+          <span><b>强制顺序：协议无写通道 → tools.restrict 物理裁剪 → 提示词仅说明。</b>
+          外部载体只受协议约束，能力边界由它自己声明；越权只能由状态机判废，不能靠它自报。</span>
+        </div>
+          <div class="settled">
+            <div class="sh-line">
+              <span class="sh-label">读写边界</span>
+              <span class="badgeS">#5 B6 已定</span>
+            </div>
+            <div class="sh-value">读 01 / 03 / 04 / 06 + 仓库客观产物 ｜ 写 04 review-r&lt;N&gt;.md、06 final.md</div>
+            <div class="hint" style="font-size:10px;margin:0">
+              输入里<b>没有 Executor 的任何主观叙述</b>（#5 A4）：它只拿冻结需求 + 自己读到的仓库状态。
+              越权＝调用前后快照 diff 出现本轮不该写的路径，累计 2 次 → <code>escalated</code>。
+            </div>
+          </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="card" aria-labelledby="sec-collab">
+        <div class="sec-hd">
+          <div class="sec-title" id="sec-collab"><span class="idx">B</span>协作与工作台</div>
+          <span class="tag off">state.json + 路径</span>
+        </div>
+
+        <div class="row">
+          <div class="row-txt">
+            <span class="row-name">协作总开关</span>
+            <span class="row-sub">按会话粒度，沿用 isCollabEnabled(sid)；关时状态机不启动</span>
+          </div>
+          <button class="sw" type="button" role="switch" aria-checked="true" aria-label="协作总开关"></button>
+        </div>
+
+        <div class="row">
+          <div class="row-txt">
+            <span class="row-name">预估子 agent 数量</span>
+            <span class="row-sub">关闭时 Planner 不产出该字段，也不要求主 agent 生成子 agent</span>
+          </div>
+          <button class="sw" type="button" role="switch" aria-checked="false" aria-label="预估子 agent 数量"></button>
+        </div>
+
+        <div class="row">
+          <div class="row-txt">
+            <span class="row-name">审核档位</span>
+            <span class="row-sub">严格＝逐条对齐需求项；宽松＝只判整体是否达成</span>
+          </div>
+          <div class="seg" role="group" aria-label="审核档位">
+            <button type="button" class="on">严格</button>
+            <button type="button">宽松</button>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="row-txt">
+            <span class="row-name">驳回上限</span>
+            <span class="row-sub">到顶后自动升级人类，不再自动流转</span>
+          </div>
+          <div class="stepper">
+            <button type="button" aria-label="减少">−</button>
+            <span class="val">2</span>
+            <button type="button" aria-label="增加">+</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-label">临时工作台根路径</div>
+          <input type="text" value="C:\Users\Administrator\.dsh\agy-collab\workspace">
+        </div>
+        <div class="settled">
+          <div class="sh-line">
+            <span class="sh-label">实际层级（#4 Q3 已定）</span>
+            <span class="badgeS">分级隔离</span>
+          </div>
+          <div class="sh-value">&lt;root&gt;/&lt;host-pid&gt;-&lt;boot-id&gt;/&lt;session-id&gt;/&lt;task-id&gt;/01-06</div>
+          <div class="hint" style="font-size:10px;margin:0">
+            每一级都带身份，<b>多个会话并发天然不互踩</b>，不需要额外的锁。
+          </div>
+        </div>
+
+        <div class="settled">
+          <div class="sh-line">
+            <span class="sh-label">下次启动会清扫</span>
+            <span class="badgeS">#4 Q4 已定 · 按 pid + boot-id</span>
+          </div>
+          <div class="sh-value">2 个残留目录 · 共 1.4 MB</div>
+          <div class="hint" style="font-size:10px;margin:0">
+            39812-3f9a1c（pid 已不存在）· 40120-77b20e（boot-id 不匹配，是上一次开机的）<br>
+            <b>正常退出删 / 崩溃留残骸 / 下次启动清扫</b> ← 只承诺这三段，不做崩溃快照、不续跑。
+          </div>
+        </div>
+
+        <div class="btnrow">
+          <button class="btn primary" type="button">导出当前工作台…</button>
+          <button class="btn ghost" type="button">打开根目录</button>
+          <button class="btn ghost" type="button">立刻清扫</button>
+        </div>
+        <div class="hint">「删除」只挂在 Host 进程退出；关窗留托盘不删。导出是复制，自动删除语义不变。</div>
+      </section>
+
+      <!-- ══════════ 分界 ══════════ -->
+      <div class="divider" role="separator">
+        <span class="line"></span>
+        <span class="txt">以上为配置 · 以下为现状</span>
+        <span class="line"></span>
+      </div>
+
+      <!-- ══════════ 运行台 ══════════ -->
+      <div class="realm now">
+        <div class="realm-caption">
+          <b>运行台</b><span>· 只读派生视图，真相在 Workspace，不在 broker</span>
+        </div>
+
+        <section class="card" aria-labelledby="sec-now">
+          <div class="sec-hd">
+            <div class="sec-title" id="sec-now"><span class="idx">C</span>当前任务</div>
+            <span class="tag warn">revising · 已驳回 1 次</span>
+          </div>
+
+          <div class="now-top">
+            <div class="now-task">
+              <span class="tid">t-2026-1125-01</span>
+              <span class="tpath">…\41216-9f3c1a\s-8ac2\t-2026-1125-01\</span>
+            </div>
+            <div class="now-state">
+              <span class="state-name">revising</span>
+              <span class="hint" style="font-size:10px">已运行 12m 04s</span>
+            </div>
+          </div>
+
+          <!-- 6 目录进度 -->
+          <div class="grid6">
+            <div class="cell is-done">
+              <div class="cstep"><span class="n">01</span><span>✓</span></div>
+              <div class="cname">原始任务需求和目的</div>
+              <div class="cmeta">request.md</div>
+            </div>
+            <div class="cell is-done">
+              <div class="cstep"><span class="n">02</span><span>✓</span></div>
+              <div class="cname">执行方案</div>
+              <div class="cmeta">plan.md</div>
+            </div>
+            <div class="cell is-done">
+              <div class="cstep"><span class="n">03</span><span>✓</span></div>
+              <div class="cname">任务清单</div>
+              <div class="cmeta">tasks.md · 冻结</div>
+            </div>
+            <div class="cell is-warn">
+              <div class="cstep"><span class="n">04</span><span>需修改</span></div>
+              <div class="cname">审核结果</div>
+              <div class="cmeta">review-r1.md</div>
+            </div>
+            <div class="cell is-active">
+              <div class="cstep"><span class="n">05</span><span>进行中</span></div>
+              <div class="cname">修改方案</div>
+              <div class="cmeta">revision-r1</div>
+            </div>
+            <div class="cell is-pending">
+              <div class="cstep"><span class="n">06</span><span>未到</span></div>
+              <div class="cname">最终审核</div>
+              <div class="cmeta">final.md</div>
+            </div>
+          </div>
+          <div class="hint" style="font-size:10px">
+            04 收<b>所有有返工预算</b>的轮次（review-r1、review-r2…）；<b>06 只收「不能再循环的那一次」</b>——
+            上限 2 时第 3 轮才写 06。<b>首发通过则 05、06 一并跳过</b>（T8）。
+          </div>
+
+          <!-- 谁在等谁 -->
+          <div class="waitbox">
+            <div class="wh"><span>⏳</span><span>现在在等：Planner 写完 05，然后 Executor 改，再送 Reviewer 复审</span></div>
+            <div class="wd">
+              Planner 正在写 <code>05-修改方案/revision-r1.md</code>。累计驳回 <b>1 / 2</b>。
+              复审仍在有返工预算的范围内 → 第 2 轮落 <code>04/review-r2.md</code>；
+              若这轮仍不通过（驳回到 2 = 上限），第 3 轮进 <code>06/final.md</code>，通过则 <code>done</code>、不通过则 <code>escalated</code>。
+            </div>
+          </div>
+
+          <div class="settled">
+            <div class="sh-line">
+              <span class="sh-label">审核轮次</span>
+              <span class="badgeS">#5 B4 已定</span>
+            </div>
+            <div class="sh-value">round = 2 ｜ rejection_count = 1 ｜ 上限 2 ｜ 剩余返工预算 1</div>
+            <div class="hint" style="font-size:10px;margin:0">
+              计数只从 <code>state.json</code> 读，<b>不从 04 的文件数反推</b>——文件数反映已发生的轮次，不反映还剩多少预算。
+            </div>
+          </div>
+          <div class="settled">
+            <div class="sh-line">
+              <span class="sh-label">状态集合</span>
+              <span class="badgeS">#5 B1 · 10 个</span>
+            </div>
+            <div class="sh-value">drafting ready running reviewing revising final-review done blocked escalated aborted</div>
+            <div class="hint" style="font-size:10px;margin:0">
+              面向用户的 5 阶段只是展示层归并：准备（drafting/ready）· 执行（running）· 审核（reviewing/final-review）· 返工（revising）· 收尾（done/blocked/escalated/aborted）。
+            </div>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="sec-actors">
+          <div class="sec-hd">
+            <div class="sec-title" id="sec-actors"><span class="idx">D</span>角色最近动作</div>
+            <span class="tag off">按 Workspace mtime</span>
+          </div>
+          <div class="actors">
+            <div class="actor plan done">
+              <span class="adot"></span>
+              <span class="awho">Planner</span>
+              <span class="adid">写 05-修改方案/revision-r1.md</span>
+              <span class="atime">刚刚</span>
+            </div>
+            <div class="actor exec">
+              <span class="adot"></span>
+              <span class="awho">Executor</span>
+              <span class="adid">改了仓库 4 个文件（六目录零写入）</span>
+              <span class="atime">−4m 12s</span>
+            </div>
+            <div class="actor rev done">
+              <span class="adot"></span>
+              <span class="awho">Reviewer</span>
+              <span class="adid">04-审核结果/review-r1.md → needs_revision（3 条 finding）</span>
+              <span class="atime">−6m 40s</span>
+            </div>
+            <div class="actor idle">
+              <span class="adot"></span>
+              <span class="awho">人类</span>
+              <span class="adid">未介入</span>
+              <span class="atime">—</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="sec-files">
+          <div class="sec-hd">
+            <div class="sec-title" id="sec-files"><span class="idx">E</span>工作台文件</div>
+            <span class="tag review">建议：UI 只读</span>
+          </div>
+          <div class="files">
+            <div class="frow"><span class="fdir">01</span><span class="fname">request.md</span><span class="fsize">1.2 KB</span><span class="fro">不可变</span></div>
+            <div class="frow"><span class="fdir">02</span><span class="fname">plan.md</span><span class="fsize">3.4 KB</span><span class="fro">可覆盖</span></div>
+            <div class="frow"><span class="fdir">03</span><span class="fname">tasks.md</span><span class="fsize">2.1 KB</span><span class="fro">已冻结</span></div>
+            <div class="frow"><span class="fdir">04</span><span class="fname">review-r1.md</span><span class="fsize">1.8 KB</span><span class="fro">只增不改</span></div>
+            <div class="frow"><span class="fdir">05</span><span class="fname">revision-r1.md</span><span class="fsize">写入中</span><span class="fro">在写</span></div>
+            <div class="frow"><span class="fdir">06</span><span class="fname">—（未生成）</span><span class="fsize">—</span><span class="fro">终审</span></div>
+          </div>
+          <div class="settled">
+            <div class="sh-line">
+              <span class="sh-label">能否在 UI 里直接改</span>
+              <span class="badgeS">原型主张 · 只读</span>
+            </div>
+            <div class="sh-value">只读展示 + 「打开文件夹」／不在 UI 里编辑</div>
+            <div class="hint" style="font-size:10px;margin:0">
+              #4 Q5 已定「存活期允许用户直接改文件、下游按最新文件生效」，那是<b>文件系统层面</b>的授权，
+              不等于 UI 要给编辑框。理由：#5 A5 的越权判定依赖 Workspace 全树快照 diff——
+              人从 UI 里写进去的内容与角色越权在快照里长得一样，判废会误伤。<b>要改就走资源管理器，路径在 B 区。</b>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="sec-trace">
+          <div class="sec-hd">
+            <div class="sec-title" id="sec-trace"><span class="idx">F</span>已定 / 仍待定</div>
+            <span class="tag off">可追溯</span>
+          </div>
+          <div class="hint" style="font-size:10px">
+            这一页上每一处「已定」都指回一张已关的票；剩下的「仍待定」不是没画完，是本轮不该替它拍板。
+          </div>
+          <div class="files">
+            <div class="frow"><span class="fdir">#4</span><span class="fname">状态归属 / 启停生命周期 / 删除时机 / 目录层级 / 存活期可改</span><span class="fsize">已关</span><span class="fro">Q1–Q5</span></div>
+            <div class="frow"><span class="fdir">#5</span><span class="fname">六目录读写契约 / 十状态 / 转移表 T1–T15 / 轮次与 04·06 分工 / 越权判定</span><span class="fsize">已关</span><span class="fro">A·B 段</span></div>
+            <div class="frow"><span class="fdir">#7</span><span class="fname">与现行单 broker 双 agent 的兼容迁移路径</span><span class="fsize">未开</span><span class="fro">迁移票</span></div>
+            <div class="frow"><span class="fdir">—</span><span class="fname">设置项落库的具体 schema（state.json 里键名怎么排）</span><span class="fsize">未定</span><span class="fro">实现票</span></div>
+            <div class="frow"><span class="fdir">—</span><span class="fname">UI 编辑权（现在主张只读，改不改由实现票定）</span><span class="fsize">未定</span><span class="fro">实现票</span></div>
+          </div>
+          <div class="hint" style="font-size:10px">
+            本页所有数字都是假数据，形状是真的（task id 形态、6 个目录名与文件名、三个角色、路径层级）。
+            点按钮基本没反应；<b>没有任何 fetch、没有任何假后端调用</b>。
+          </div>
+        </section>
+      </div>
+
+    </div>
+  </aside>
+</div>
+
+<!-- 原型工具条：放最后，保证压在背景之上 -->
+<div class="proto-bar">
+  <span class="tag">原型工具条 · 不属于设计</span>
+  <button type="button" id="btn-theme">切深色</button>
+  <button type="button" id="btn-width">宽 760px</button>
+  <button type="button" id="btn-toggle-sw">全部开关翻转</button>
+</div>
+
+<script>
+  // 只做视觉状态，不连任何后端。
+  document.getElementById('btn-theme').addEventListener('click', function () {
+    var dark = document.body.hasAttribute('data-ds-dark-theme');
+    if (dark) { document.body.removeAttribute('data-ds-dark-theme'); this.textContent = '切深色'; }
+    else { document.body.setAttribute('data-ds-dark-theme', ''); this.textContent = '切浅色'; }
+  });
+  document.getElementById('btn-width').addEventListener('click', function () {
+    var wide = document.body.classList.toggle('wide');
+    this.textContent = wide ? '宽 460px' : '宽 760px';
+    this.classList.toggle('on', wide);
+  });
+  document.getElementById('btn-toggle-sw').addEventListener('click', function () {
+    document.querySelectorAll('.sw').forEach(function (s) {
+      s.setAttribute('aria-checked', s.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+    });
+  });
+  document.querySelectorAll('.sw').forEach(function (s) {
+    s.addEventListener('click', function () {
+      s.setAttribute('aria-checked', s.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+    });
+  });
+  document.querySelectorAll('.seg').forEach(function (g) {
+    g.querySelectorAll('button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        g.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); });
+        b.classList.add('on');
+      });
+    });
+  });
+</script>
+</body>
+</html>
