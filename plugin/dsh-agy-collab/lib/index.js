@@ -20,6 +20,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
+import { isActorSession } from './actor-sessions.js';
+
 export const name = 'dsh-agy-collab';
 export const inject = ['tools', 'systemPrompt'];
 
@@ -235,19 +237,32 @@ function buildCollabPrompt() {
   ].join('\n');
 }
 
+/**
+ * 该会话要不要注入协作提示词（规格 §6.9 的判据集中在这里，便于离线测试）。
+ *
+ * 三条排除理由：
+ *   1. 宿主自己起的子代理带 origin === 'subagent'，不重复触发主代理的开局转达；
+ *   2. 插件自己 ctx.agents.create() 出来的角色没有那个标记
+ *      （dsh-subagent/src/child-agent.ts:152），只能查插件自持的 actor 白名单；
+ *   3. 会话开关是关的。
+ */
+export function shouldInjectCollabPrompt(context, deps = {}) {
+  const actorCheck = deps.actorCheck ?? isActorSession;
+  const enabledCheck = deps.enabledCheck ?? isCollabEnabled;
+  const origin = context?.agent?.session?.header?.origin;
+  if (origin === 'subagent') return false;
+  const sid = sessionIdOfContext(context);
+  if (actorCheck(sid)) return false;
+  if (!enabledCheck(sid)) return false;
+  return true;
+}
+
 function registerPromptSection(ctx) {
   const sectionSpec = {
     name: PROMPT_SECTION_NAME,
     order: 5200,
     interpolate: false,
-    text: (context) => {
-      // 子代理不重复触发主代理的开局转达，只对主会话且开关开启时生效
-      const origin = context?.agent?.session?.header?.origin;
-      if (origin === 'subagent') return '';
-      const sid = sessionIdOfContext(context);
-      if (!isCollabEnabled(sid)) return '';
-      return buildCollabPrompt();
-    },
+    text: (context) => (shouldInjectCollabPrompt(context) ? buildCollabPrompt() : ''),
   };
 
   const hosts = [];
@@ -535,6 +550,31 @@ export async function apply(ctx) {
 
     // 3. Install same-origin web routes for the dialog toggle button
     installWebRoutes(ctx);
+
+    // 4. v2 装配（三角色 + 六目录临时工作台）。
+    //    只有显式设置 DSH_AGY_COLLAB_V2=1 时才挂载；不设时插件行为与 v1 完全一致，
+    //    不迁移配置、不动 records.json、不碰 broker。
+    if (String(process.env.DSH_AGY_COLLAB_V2 || '') === '1') {
+      try {
+        const { mountV2 } = await import('./v2/index.js');
+        const dispose = await mountV2(ctx, {
+          log: (msg) => {
+            try {
+              ctx?.logger?.info?.(msg);
+            } catch {
+              // ignore
+            }
+          },
+        });
+        if (typeof dispose === 'function') disposers.push(dispose);
+      } catch (error) {
+        try {
+          ctx?.logger?.warn?.(`[dsh-agy-collab] v2 装配失败：${error?.message ?? error}`);
+        } catch {
+          // ignore
+        }
+      }
+    }
 
     if (typeof ctx.effect === 'function') {
       ctx.effect(() => () => {

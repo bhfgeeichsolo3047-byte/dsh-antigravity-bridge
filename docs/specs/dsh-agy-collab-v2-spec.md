@@ -307,6 +307,10 @@ Executor 永远不绑只读档，Planner / Reviewer 永远不绑仓库写档。
 
 机制：每次角色调用前后各取一次快照（Workspace 全树 `path,mtime,size,sha256` + `git status --porcelain`），差集只允许出现「本轮该写的那个文件」。多出任何东西 → `overreach_count += 1`，累计 2 次 → `escalated`。
 
+**任务 `state.json` 按哈希豁免，不按文件名豁免**：它是 Host 状态机的账本，住在任务根目录下，而角色的每一次事件推进（`format-violation`、`protocol-violation`、`overreach`）都会让 Host 写它。若不处理，任何一次违约记数都会在下一轮快照里被读成「角色多写了一个文件」，把违约误判成越权、并让重试环永远收敛不了。
+
+但**不能按文件名无条件放过**：那样角色直接篡改任务 `state.json`（例如伪造 `state: done`）就完全失明。判据是**写入方 + 内容**两段：Host 每次落盘任务 `state.json` 之后记下它的 `sha256`；快照 diff 时，只有当 `after['state.json'].sha256` 等于这个「Host 自己刚落盘的哈希」才豁免；哈希对不上（被改写）或文件被删，一律计入差集触发 `overreach`。
+
 这条也解释了为什么设置页**不给文件编辑框**：人从 UI 写进去的内容，在快照 diff 里与角色越权长得一模一样，会判废误伤。
 
 ### 6.5 冷调用（D3）
@@ -722,6 +726,30 @@ const LEGACY_V1_PATHS = [
 | 8 | 设置页（先配置，后运行台） | 最后，因为它只读前面的状态 |
 
 第 1–5 步做完就是一个能跑的最小闭环，6–8 是可用的外围。
+
+### 13.1 第 1–5 步的实现状态
+
+第 1–5 步已实现，落在 `plugin/dsh-agy-collab/lib/v2/`，由 `DSH_AGY_COLLAB_V2=1` 门控；不设该变量时插件行为与 v1 完全一致。
+
+| 文件 | 承担 |
+| --- | --- |
+| `lib/v2/config.js` | 配置 schema v2 默认值、`normalizeConfig`、迁移闸 `migrateConfigIfNeeded`、`resolveBootId`、按会话的开关读写 |
+| `lib/v2/workspace.js` | 6 目录创建、分级隔离路径、孤儿清扫、快照 diff、哈希核验的越权判定、`gitStatusPorcelain` |
+| `lib/v2/artifacts.js` | front-matter 解析（自写 YAML 子集）、6 目录各自的字段校验、`tasks.md` 三条机器硬检查、`requirement_ref` 幻觉校验 |
+| `lib/v2/state-machine.js` | 十状态 / 五阶段、T1–T15、四个计数器、`writableSlots`、`reviewSlotFor` |
+| `lib/v2/roles.js` | 进程内角色载体（`ctx.agents.create` + `tools.restrict`）、角色提示词、actor sessionId 生成 |
+| `lib/v2/tools.js` | `collab_write` 四条校验、Executor 三个触发点、工具定义装配 |
+| `lib/v2/orchestrator.js` | 薄编排：任务开立、事件落盘、规划 / 审核 / 返工三个阶段的重试环、快照越权 |
+| `lib/v2/index.js` | 装配层：门控、按会话隔离的编排器、`collab_start` 与 Executor 三件的闭环 |
+| `lib/actor-sessions.js` | 插件自建实例的 sessionId 白名单，替代 `origin === 'subagent'` 判据（§6.9） |
+
+实现期与本表原文的三处偏离，都是被实测逼出来的：
+
+1. **配置目录多了一个 `DSH_AGY_COLLAB_DATA_DIR` 逃生口**（优先级：显式参数 > 该环境变量 > `~/.dsh/agy-collab`）。没有它，冒烟与测试会就地迁移用户真实的配置 `state.json`。
+2. **任务 `state.json` 的豁免改成哈希核验**（§6.4 已同步改）。按文件名无条件豁免会让角色伪造 `done` 完全失明。
+3. **`runReview` / `runDrafting` 带原地重试环**。§9.3 第 5 步的「原地重写同一文件」若只写一句提示词、不在编排层真的重试，协议违规就永远收敛不到 `escalated`。
+
+测试：`npm test` 跑 `test/v2/*.test.mjs`，覆盖配置迁移、Workspace 清扫、产物校验、状态机、角色隔离、编排闭环、越权三道判据（篡改 / 删除任务 `state.json`、改目标仓库）。
 
 ---
 
