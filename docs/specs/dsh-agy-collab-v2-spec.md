@@ -775,6 +775,42 @@ const LEGACY_V1_PATHS = [
 
 测试：`test/broker/ownership.test.mjs` 15 个用例，覆盖 `readPidRecord` 四态、`isPidAlive` 边界、`ensureBroker` 五分支（全注入假件，不真起进程）、以及三次真起 broker 的端到端（`/health` 签名与 `broker.pid` 五字段一致、异己占用 exit 2 + stderr 文案 + 不写归属记录、同端口第二实例 exit 0 且不删第一实例的归属记录）。
 
+### 13.3 第 7 步的实现状态
+
+第 7 步已实现。它同时覆盖两件事：**A 侧模板换词表**，和**安装变成声明式**。两者必须同一次提交（§11.6）—— 否则用户跑一次 `npm run install:bridge` 就把旧协议写回去。
+
+**A 侧模板（§11.1 / §11.2）**
+
+| 文件 | 承担 |
+| --- | --- |
+| `antigravity/rules/dsh-collab/planner.md` | 规划者契约：读 01 / 03 / 04 / 05，写 02 `plan.md`、03 `tasks.md`、05 `revision-r<N>.md`；03 三条硬检查；无仓库写通道 |
+| `antigravity/rules/dsh-collab/reviewer.md` | 审核者契约：先读 03 需求锚，再读仓库客观产物；**明令不读 02**、不看执行者自述；写 04 `review-r<N>.md` 或 06 `final.md` |
+
+v1 的 `antigravity/rules/dsh-collab-protocol.md` 与 `antigravity/skills/dsh-collab/SKILL.md` 已从仓库删除（`git rm`）—— 它们是旧词表的载体，留着就有第二条被安装的路径。两份新模板的 front-matter 带 `role` 与 `template_version: 2.0.0`，正文里 `~/.dsh/agy-collab` 是占位符，由 `install.mjs` 按实际 `DSH_HOME` 替换。
+
+**声明式同步（§11.3 / §11.3.1 / §11.4 / §11.5）**
+
+| 文件 | 承担 |
+| --- | --- |
+| `scripts/template-sync.mjs` | `planTemplateSync`（算但不落盘）/ `applyTemplateSync`（落盘）/ `inspectTemplates`（三态）/ `readManifest`（四态）/ `sha256Of` / `templateVersionOf` |
+| `scripts/install.mjs` | 第 3 步改为调 `planTemplateSync` + `applyTemplateSync`，并在装完自检 `inspectTemplates`，非 `installed` 则以非零退出码报出 |
+
+manifest 落 `~/.gemini/config/.dsh-collab-manifest.json`，`{ schemaVersion: 1, files: [{ path, sha256 }] }`。`readManifest` 的四个返回值直接对应四种处置：`absent` / `unrecognized` → 首次迁移（清 `LEGACY_V1_PATHS`，且不写进 manifest）；`current` → 按三条规则正常同步。删除 v1 skill 后若 `skills/dsh-collab/` 变空则一并 `rmdir`，非空则留着（不清别人的文件）。
+
+**语义层迁移（§9.1 / §9.3）**
+
+| 位置 | 改动 |
+| --- | --- |
+| `broker/broker.mjs` `/relay` | 路由依据改为 `role: planner\|reviewer`；`phase` 降级为别名（`plan`→planner、`consult`→planner、`review`→reviewer）；新增 `round` / `stage` / `cold` / `roleBinding` / `estimateSubagents` 与 `legacyPhase` 标记 |
+| `broker/broker.mjs` `/reply` | 不再按 phase 编造 verdict（旧词表全删）；`content` 可选；新增 `handledIn` 透传 |
+| `broker/wait-next-request.mjs` | 输出 `Role` / `Round` / `Stage` / `Cold` / `Role Binding` / `Estimate`，并按 role 打印该载哪份模板；回传命令不再带 `--verdict`，cold 时自动带 `--handled-in subagent` |
+| `broker/reply-request.mjs` | 新增 `--handled-in main\|subagent`（校验取值）；`--content` / `--file` 变可选；`--id` 变必填（不再靠 broker 猜最旧请求） |
+| `lib/v2/roles.js` `externalWakePayload` | 字段名对齐 broker 读法：`workspace` / `taskId` / `role` / `round` / `stage` / `cold` / `roleBinding` / `estimateSubagents` / `task` / `sessionId`；原来的 `workspace_dir` / `task_id` 是死字段（broker 不认，且不会报错，属静默失效） |
+
+测试：`test/broker/template-sync.test.mjs` 28 个用例（manifest 四态、首次迁移清理与「不写进 manifest」、三条规则、dry-run 不改盘、路径替换、三态判定含 `outdated` 与 `drifted` 的区分、两份源模板自身的契约）；`test/broker/role-protocol.test.mjs` 10 个用例（role 路由、旧 phase 回落、consult 已删、非法 role 回落、`/reply` 不编 verdict、`handledIn` 透传、A 侧 CLI 输出无旧词表）；`test/v2/roles-tools.test.mjs` 新增 2 个用例钉住唤醒载荷的字段名。
+
+实现期偏离一处：**`install.mjs` 增加了装后自检与非零退出码**。§11.6 只要求「三者同一次提交」，但实测「装了一半」在终端里看不出来（每个文件都打印了 wrote），所以补一个 `inspectTemplates` 回读，状态不对就报错退出。
+
 ---
 
 ## 14. 三条贯穿全篇的硬前提

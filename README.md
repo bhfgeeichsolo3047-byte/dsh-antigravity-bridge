@@ -113,15 +113,15 @@ dsh-antigravity-bridge/
 │       └── client.js               # Client 端：外置控制条与右侧任务看板 UI
 ├── test/
 │   ├── v2/                         # v2 单元与端到端测试（13 个文件）
-│   └── broker/                     # 本地总线派发、作废、断连回收测试
+│   └── broker/                     # 本地总线：派发、作废、断连回收、端口归属、模板同步、role 协议
 ├── antigravity/
-│   ├── rules/
-│   │   └── dsh-collab-protocol.md  # Antigravity (A) 全局协作协议规则模板
-│   └── skills/
+│   └── rules/
 │       └── dsh-collab/
-│           └── SKILL.md            # Antigravity (A) 协作技能模板
+│           ├── planner.md          # A 侧规划者模板（按 Role 载入，非 phase）
+│           └── reviewer.md         # A 侧审核者模板；Executor 无 A 侧模板
 ├── scripts/
 │   ├── install.mjs                 # 一键部署到 ~/.dsh/agy-collab、DSH profiles 与 ~/.gemini/config
+│   ├── template-sync.mjs           # A 侧模板的声明式同步（manifest + sha256 + 首次迁移清理）
 │   └── sync-plugin.mjs             # 仅同步 DSH 插件并触发 HMR 热重载
 ├── package.json
 ├── .gitignore
@@ -146,6 +146,26 @@ npm run install:bridge
 ```
 
 > 若 DSH Desktop 正在运行，`scripts/sync-plugin.mjs` 会自动更新 `cordis.patch.yml` 的时间戳以触发服务端与前端热重载；如宿主机未能热载完整模块，重启一次 DSH Desktop 即可。
+
+#### A 侧模板是声明式同步的
+
+A（Antigravity）侧的两份角色模板装到 `~/.gemini/config/rules/dsh-collab/`：
+
+| 文件 | 谁用 | 何时载入 |
+|---|---|---|
+| `planner.md` | 规划者 | 请求里 `Role: planner` |
+| `reviewer.md` | 审核者 | 请求里 `Role: reviewer` |
+
+**Executor 没有 A 侧模板** —— 它绑 DSH 当前会话，Antigravity 侧从不扮演这个角色，分发一份只会制造「Executor 也能外置」的错误预期。
+
+同步靠 `scripts/template-sync.mjs` 的 manifest（`~/.gemini/config/.dsh-collab-manifest.json`），三条规则加一条迁移规则：
+
+1. 本次要分发的 → 覆盖写 + 记进 manifest；
+2. manifest 记过、本次不再分发 → 删除 + 移出 manifest；
+3. **不在 manifest 里的一律不碰**（你自己放进去的规则文件不会被删）；
+4. manifest 不存在或 `schemaVersion` 不认识 = 首次迁移 → 显式清理 v1 遗留物 `rules/dsh-collab-protocol.md` 与 `skills/dsh-collab/SKILL.md`，且**不把它们写进 manifest**。
+
+判新旧用 `sha256`，不用版本号；`template_version` 只是给人看的。装完 `install.mjs` 会自检一次，状态不是 `installed` 就以非零退出码报出来 —— 免得「装了一半」却以为装好了。
 
 ### 2. 在 DeepSeek Harness (D) 开启协作（v2 默认路径）
 
@@ -177,6 +197,8 @@ node "~/.dsh/agy-collab/wait-next-request.mjs"
 
 > **注意**：当前设计为**不自动抢占**旧会话监听。切换到新协作窗口前，请先在旧窗口停止监听任务。
 
+v1 回退模式下 A 侧按 `Role` 载模板：同一个 Antigravity 进程在 dual 绑定里可能同时占规划与审核两槽，所以每次唤醒都靠请求里的 `Role` 字段决定载哪一份 —— 模式切换因此是零文件变更。
+
 ---
 
 ## 本地总线 API 一览 (`127.0.0.1:18765`)
@@ -189,9 +211,9 @@ broker 在 v2 默认路径下退化为**可选传输管道**（只有角色绑�
 | `/state` | `GET` / `POST` | 获取或切换会话/全局协作开关，同时返回最近 3 条记录 |
 | `/records` | `GET` | 获取当前保留的协作记录（最多 3 条） |
 | `/records/clear` | `POST` | 清空协作记录、事件流水及 `~/.dsh/agy-collab/*.md` 任务文档 |
-| `/relay` | `POST` | D 提交 `plan` / `consult` / `review` 请求并阻塞等待 A 回复 |
+| `/relay` | `POST` | D 提交请求并阻塞等待 A 回复；路由依据是 `role: planner\|reviewer`，`phase` 已降级为被忽略的别名 |
 | `/listen` | `GET` | A 长轮询获取单个或微批聚合请求（默认 `batchWindowMs=250`） |
-| `/reply` | `POST` | A 回传 `PLAN_READY` / `CONSULT_ANSWERED` / `APPROVED` / `CHANGES_REQUESTED` |
+| `/reply` | `POST` | A 回传「本轮结束」信号；`content` 可选、`verdict` 不猜，结论以 Workspace 文件为准 |
 | `/history` | `GET` | 获取最近事件流水（最多 6 条） |
 
 ---

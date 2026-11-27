@@ -208,14 +208,36 @@ export function knownGlobalToolNames(toolsService) {
   return [];
 }
 
-/** 角色描述（broker 唤醒进程外角色时用，§7.2 第 3 步）。 */
-export function externalWakePayload({ role, taskId, workspaceDir, round, cold = false }) {
+/**
+ * broker /relay 的请求体（唤醒进程外角色时用，§7.2 第 3 步）。
+ *
+ * 字段名与 broker 侧一致（role / round / stage / cold / roleBinding / estimateSubagents），
+ * 不要用 task_id / workspace_dir 这类下划线写法 —— broker 不认，A 侧也就拿不到工作台路径。
+ * A 侧靠 role 决定载 planner.md 还是 reviewer.md（§11.2），靠 round 决定写 review-r{N} / revision-r{N}。
+ */
+export function externalWakePayload({
+  role,
+  taskId,
+  workspaceDir,
+  round = 1,
+  stage = '',
+  cold = false,
+  roleBinding = 'triple',
+  estimateSubagents = false,
+  task = '',
+  sessionId = '',
+}) {
   return {
     role,
-    task_id: taskId,
-    workspace_dir: workspaceDir,
+    taskId,
+    workspace: workspaceDir,
     round,
+    stage,
     cold: Boolean(cold),
+    roleBinding,
+    estimateSubagents: Boolean(estimateSubagents),
+    task,
+    sessionId,
     must_report_handled_in: true,
   };
 }

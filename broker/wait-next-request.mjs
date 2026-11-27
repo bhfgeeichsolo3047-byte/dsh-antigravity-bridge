@@ -88,20 +88,32 @@ function pollOnce(timeoutMs = 240_000) {
   });
 }
 
-function phaseDesc(phase, compact = false) {
-  if (phase === 'plan') {
-    return compact ? '阶段一：开局整体任务规划' : '阶段一：请仅进行开局整体任务规划并提交方案';
+/**
+ * 角色说明（规格 §9.1 / §11.2）：路由依据是 role，不是 phase。
+ * 同一个 actor 在 dual 模式下可能同时占规划与审核两槽，所以每次唤醒都靠 role 字段
+ * 决定该载哪份模板 —— 模式切换因此是零文件变更。
+ */
+function roleDesc(role, compact = false) {
+  if (role === 'reviewer') {
+    return compact
+      ? '审核者：只判需求达成与否'
+      : '审核者：先读 03-任务清单/tasks.md 理解需求，再读仓库客观产物判定；不读 02 执行方案，不看执行者自述';
   }
-  if (phase === 'consult') {
-    return compact ? '执行中协商：解答疑问或确认不确定选择' : '执行中协商：请就 D 在执行过程中提出的疑问/不确定选择给出明确决策建议';
-  }
-  return compact ? '阶段二：执行结果审核' : '阶段二：请审核 D 的执行结果、可行性及是否需要修改';
+  return compact
+    ? '规划者：拆解需求、出方案与任务清单'
+    : '规划者：读 01-原始任务需求和目的/request.md，写 02-执行方案/plan.md 与 03-任务清单/tasks.md；返工轮读 04 的 findings 写 05';
 }
 
-function defaultVerdictHint(phase) {
-  if (phase === 'plan') return 'PLAN_READY';
-  if (phase === 'consult') return 'CONSULT_ANSWERED';
-  return 'APPROVED 或 CHANGES_REQUESTED';
+/** 模板文件按 role 选载（§11.2）。dual 模式下两槽同 actor 也只载当前这一份。 */
+function templateOf(role) {
+  return role === 'reviewer' ? 'reviewer.md' : 'planner.md';
+}
+
+function stageDesc(stage) {
+  if (stage === 'final-review') return '终审：这一轮的结论要写 06-最终审核/final.md';
+  if (stage === 'review') return '常规审核：结论写 04-审核结果/review-r{N}.md';
+  if (stage === 'revision') return '返工：针对 04 里的 findings 出修改方案';
+  return '首轮规划';
 }
 
 function printSingleRequest(r) {
@@ -112,8 +124,22 @@ function printSingleRequest(r) {
   console.log(`Request ID : ${r.requestId}`);
   console.log(`Session ID : ${r.sessionId || '(default)'}`);
   console.log(`Age        : ${ageSec}s (实时任务)`);
-  console.log(`Phase      : ${r.phase} (${phaseDesc(r.phase, false)})`);
+  console.log(`Role       : ${r.role || '(未指定)'} (${roleDesc(r.role, false)})`);
+  console.log(`Round      : ${r.round ?? 1}`);
+  if (r.stage) console.log(`Stage      : ${r.stage} (${stageDesc(r.stage)})`);
+  if (r.roleBinding) console.log(`Role Binding: ${r.roleBinding}`);
+  if (r.cold === true) {
+    console.log('Cold       : true —— 本次必须当作从没参与过这个任务，只以工作台文件为准');
+  }
+  if (r.estimateSubagents === true) {
+    console.log('Estimate   : 需要预估主 agent 应生成多少个子 agent（填进 plan.md 的 subagent_count）');
+  }
+  if (r.legacyPhase === true) {
+    console.log('Note       : 本次请求未带 role 字段，按旧 phase 推断；升级后请改传 role');
+  }
   console.log(`Workspace  : ${r.workspace || '(未指定)'}`);
+  console.log('----------------------------------------------------------------');
+  console.log(`【模板】按 Role 载 rules/dsh-collab/${templateOf(r.role)}；其余信息一律从 Workspace 文件读，不靠记忆`);
   console.log('----------------------------------------------------------------');
   console.log('【D 转达的任务描述 (Task)】:');
   console.log(r.task || '(无)');
@@ -128,8 +154,9 @@ function printSingleRequest(r) {
     console.log(r.executionReport);
   }
   console.log('================================================================');
-  console.log('请按角色规则生成规划方案、协商决策或审核结论，并执行以下命令回传给 D：');
-  console.log(`node "${REPLY_SCRIPT_DISPLAY}" --id "${r.requestId}" --verdict "${defaultVerdictHint(r.phase)}" --content "<你的回复内容>"`);
+  console.log('产物先写进 Workspace 对应文件，再回传「本轮结束」信号（回传内容不是结论）：');
+  const handledHint = r.cold === true ? ' --handled-in subagent' : '';
+  console.log(`node "${REPLY_SCRIPT_DISPLAY}" --id "${r.requestId}"${handledHint} --content "<一句话说明本轮写了哪些文件>"`);
 }
 
 function printBatchRequests(batch) {
@@ -148,8 +175,10 @@ function printBatchRequests(batch) {
     console.log(`-------------------- [${i + 1}/${batch.length}] Request ID: ${r.requestId} --------------------`);
     console.log(`Session ID : ${r.sessionId || '(default)'}`);
     console.log(`Age        : ${ageSec}s (实时任务)`);
-    console.log(`Phase      : ${r.phase} (${phaseDesc(r.phase, true)})`);
+    console.log(`Role       : ${r.role || '(未指定)'} (${roleDesc(r.role, true)})`);
+    console.log(`Round      : ${r.round ?? 1}${r.stage ? ` · Stage ${r.stage}` : ''}${r.cold === true ? ' · Cold' : ''}`);
     console.log(`Workspace  : ${r.workspace || '(未指定)'}`);
+    console.log(`【模板】rules/dsh-collab/${templateOf(r.role)}（每个请求按自己的 Role 载对应模板）`);
     console.log('【Task】:');
     console.log(r.task || '(无)');
     if (r.context) {
@@ -161,7 +190,8 @@ function printBatchRequests(batch) {
       console.log(r.executionReport);
     }
     console.log('【独立回传命令】:');
-    console.log(`node "${REPLY_SCRIPT_DISPLAY}" --id "${r.requestId}" --verdict "${defaultVerdictHint(r.phase)}" --content "<针对 ${r.requestId} 的回复内容>"`);
+    const handledHint = r.cold === true ? ' --handled-in subagent' : '';
+    console.log(`node "${REPLY_SCRIPT_DISPLAY}" --id "${r.requestId}"${handledHint} --content "<针对 ${r.requestId} 的产物清单>"`);
   }
   console.log('================================================================');
 }

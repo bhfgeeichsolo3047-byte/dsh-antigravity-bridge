@@ -1,6 +1,12 @@
 /**
- * CLI helper for Agent A (Antigravity) to submit task planning or review verdict
- * back to DeepSeek Harness (D) via the local network broker (127.0.0.1:18765).
+ * A 侧回传助手：向 DSH 的本地 broker 提交「本轮结束」信号（规格 §9.3）。
+ *
+ * 语义变化（v2）：
+ *   - 回传内容**不再是结论**。真正的结论在 Workspace 的 04/06 文件里，Host 自己去读并校验。
+ *   - 因此 --content / --file 变成可选；只发一个「我做完了」也合法。
+ *   - --verdict 只做透传，不再有 PLAN_READY / CONSULT_ANSWERED / APPROVED / CHANGES_REQUESTED
+ *     这套旧词表；要传就传 pass / needs_revision，但那也只是给人看的，判定以文件为准。
+ *   - 新增 --handled-in main|subagent：dual 冷调用下必须声明这次是在主对话还是子实例里处理的。
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -29,8 +35,10 @@ function resolvePort() {
 
 const PORT = resolvePort();
 
+const HANDLED_IN_VALUES = ['main', 'subagent'];
+
 function parseArgs(argv) {
-  const out = { id: '', verdict: '', content: '', file: '' };
+  const out = { id: '', verdict: '', content: '', file: '', handledIn: '' };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if ((a === '--id' || a === '-i') && argv[i + 1]) {
@@ -41,24 +49,37 @@ function parseArgs(argv) {
       out.content = argv[++i];
     } else if ((a === '--file' || a === '-f') && argv[i + 1]) {
       out.file = argv[++i];
+    } else if ((a === '--handled-in' || a === '-H') && argv[i + 1]) {
+      out.handledIn = argv[++i];
     }
   }
   if (out.file && !out.content) {
-    out.content = fs.readFileSync(out.file, 'utf8');
+    try {
+      out.content = fs.readFileSync(out.file, 'utf8');
+    } catch (err) {
+      console.error(`[agy-collab-reply] 读不到 --file 指定的文件：${out.file} (${err.message})`);
+      process.exit(1);
+    }
   }
   return out;
 }
 
 const args = parseArgs(process.argv);
-if (!args.content) {
-  console.error('Usage: node reply-request.mjs --id <requestId> --verdict <PLAN_READY|APPROVED|CHANGES_REQUESTED> --content "<text>" (or --file <path>)');
+
+if (!args.id) {
+  console.error('Usage: node reply-request.mjs --id <requestId> [--handled-in main|subagent] [--content "<text>" | --file <path>]');
+  process.exit(1);
+}
+if (args.handledIn && !HANDLED_IN_VALUES.includes(args.handledIn)) {
+  console.error(`[agy-collab-reply] --handled-in 只接受 ${HANDLED_IN_VALUES.join(' | ')}，收到：${args.handledIn}`);
   process.exit(1);
 }
 
 const body = JSON.stringify({
   requestId: args.id,
   verdict: args.verdict || undefined,
-  content: args.content,
+  handledIn: args.handledIn || undefined,
+  content: args.content || undefined,
 });
 
 const req = http.request(

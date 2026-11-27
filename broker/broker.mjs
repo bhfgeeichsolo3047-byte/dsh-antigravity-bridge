@@ -211,7 +211,11 @@ function toPublicRecord(r) {
   return {
     requestId: r.requestId,
     sessionId: r.sessionId || '',
+    role: r.role ?? ((r.phase || 'plan') === 'review' ? 'reviewer' : 'planner'),
     phase: r.phase || 'plan',
+    round: r.round ?? 1,
+    stage: r.stage || '',
+    cold: r.cold === true,
     workspace: r.workspace || '',
     createdAt: Number(r.createdAt) || Date.now(),
     repliedAt: r.repliedAt ? Number(r.repliedAt) : null,
@@ -312,11 +316,22 @@ function hasEligibleRequest(now = Date.now()) {
   return false;
 }
 
+/**
+ * A 侧看到的形状。role / round / stage / cold 是 v2 路由依据（§9.1），
+ * phase 与 legacyPhase 只用于兼容与排错，A 不该再按 phase 做判断。
+ */
 function serializeRequestForA(r) {
   return {
     requestId: r.requestId,
     sessionId: r.sessionId,
+    role: r.role ?? (r.phase === 'review' ? 'reviewer' : 'planner'),
     phase: r.phase,
+    legacyPhase: r.legacyPhase === true,
+    round: r.round ?? 1,
+    stage: r.stage || '',
+    cold: r.cold === true,
+    roleBinding: r.roleBinding || '',
+    estimateSubagents: r.estimateSubagents === true,
     task: r.task,
     context: r.context,
     executionReport: r.executionReport,
@@ -535,7 +550,28 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const phase = body.phase === 'review' ? 'review' : body.phase === 'consult' ? 'consult' : 'plan';
+      /**
+       * 语义层已从 phase 迁到 role（规格 §9.1）：路由依据是 role=planner|reviewer。
+       * phase 降级为被忽略的别名，只为让还没升级的调用方继续能用 —— 映射关系
+       * plan→planner、consult→planner（consult 阶段已删，需求不清走 blocked）、
+       * review→reviewer。真正传了 role 时一律以 role 为准。
+       */
+      const roleRaw = String(body.role || '').trim().toLowerCase();
+      let role;
+      let legacyPhase = false;
+      if (roleRaw === 'planner' || roleRaw === 'reviewer') {
+        role = roleRaw;
+      } else {
+        legacyPhase = true;
+        role = body.phase === 'review' ? 'reviewer' : 'planner';
+      }
+      // phase 仍写进 record：看板与 /records 的既有读法不变，但它不再是路由依据。
+      const phase = role === 'reviewer' ? 'review' : 'plan';
+      const round = Math.max(1, Number(body.round) || 1);
+      const cold = body.cold === true;
+      const stage = String(body.stage || '').trim();
+      const roleBinding = String(body.roleBinding || body.role_binding || '').trim();
+      const estimateSubagents = body.estimateSubagents === true || body.estimate_subagents === true;
       const task = String(body.task || '').trim();
       const context = String(body.context || '').trim();
       const executionReport = String(body.executionReport || body.execution_report || '').trim();
@@ -571,7 +607,14 @@ const server = http.createServer(async (req, res) => {
       const record = {
         requestId,
         sessionId,
+        role,
         phase,
+        legacyPhase,
+        round,
+        cold,
+        stage,
+        roleBinding,
+        estimateSubagents,
         task,
         context,
         executionReport,
@@ -591,7 +634,11 @@ const server = http.createServer(async (req, res) => {
         event: 'relay_from_d',
         requestId,
         sessionId,
+        role,
         phase,
+        legacyPhase,
+        round,
+        cold,
         task: task.slice(0, 500),
         workspace,
       });
@@ -768,14 +815,26 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const verdict = body.verdict || (record.phase === 'plan' ? 'PLAN_READY' : record.phase === 'consult' ? 'CONSULT_ANSWERED' : 'APPROVED');
+      /**
+       * §9.3：/reply 只剩「本轮结束」信号。
+       * 不再按 phase 猜 verdict（旧的 PLAN_READY / CONSULT_ANSWERED / APPROVED 全部删除），
+       * 也不再解析 content —— 真正的结论在 Workspace 的 04 / 06 文件里，Host 自己去读。
+       * verdict 只做透传：调用方传什么就带什么，不传就是 null，broker 不替它编。
+       */
+      const verdict = typeof body.verdict === 'string' && body.verdict.trim() ? body.verdict.trim() : null;
+      const handledIn = typeof body.handledIn === 'string' && body.handledIn.trim()
+        ? body.handledIn.trim()
+        : (typeof body.handled_in === 'string' && body.handled_in.trim() ? body.handled_in.trim() : null);
       const content = String(body.content || body.reply || '').trim();
       const repliedAt = Date.now();
       const replyPayload = {
         ok: true,
         requestId: record.requestId,
+        role: record.role ?? null,
         phase: record.phase,
+        round: record.round ?? 1,
         verdict,
+        handledIn,
         content,
         repliedAt,
       };
@@ -787,8 +846,10 @@ const server = http.createServer(async (req, res) => {
       appendHistory({
         event: 'reply_from_a',
         requestId: record.requestId,
+        role: record.role ?? null,
         phase: record.phase,
         verdict,
+        handledIn,
         content: content.slice(0, 500),
       });
 
@@ -802,7 +863,14 @@ const server = http.createServer(async (req, res) => {
 
       pruneRequestsMap(MAX_RECORDS);
 
-      sendJson(res, 200, { ok: true, delivered: true, requestId: record.requestId, verdict });
+      sendJson(res, 200, {
+        ok: true,
+        delivered: true,
+        requestId: record.requestId,
+        role: record.role ?? null,
+        verdict,
+        handledIn,
+      });
       return;
     }
 

@@ -208,6 +208,47 @@ test('进程外唤醒载荷带 cold 与 handled_in 要求', () => {
   assert.equal(payload.round, 2);
 });
 
+test('进程外唤醒载荷的字段名与 broker /relay 的读法一致', () => {
+  // broker 读 body.role / body.round / body.stage / body.cold / body.roleBinding /
+  // body.estimateSubagents / body.task / body.workspace / body.sessionId。
+  // 一旦这里改回 task_id / workspace_dir 这类下划线写法，A 侧就拿不到工作台路径，
+  // 而 broker 不会报错（它只是取不到值），属于静默失效 —— 所以用测试钉住。
+  const payload = externalWakePayload({
+    role: 'planner',
+    taskId: 't-1',
+    workspaceDir: '/w/t-1',
+    round: 3,
+    stage: 'revision',
+    cold: false,
+    roleBinding: 'dual',
+    estimateSubagents: true,
+    task: 'do something',
+    sessionId: 's-1',
+  });
+  assert.equal(payload.role, 'planner');
+  assert.equal(payload.round, 3);
+  assert.equal(payload.stage, 'revision');
+  assert.equal(payload.cold, false);
+  assert.equal(payload.roleBinding, 'dual');
+  assert.equal(payload.estimateSubagents, true);
+  assert.equal(payload.workspace, '/w/t-1');
+  assert.equal(payload.sessionId, 's-1');
+  assert.equal(payload.task, 'do something');
+  // 下划线写法不该再出现在 broker 会读的字段上
+  assert.equal('workspace_dir' in payload, false);
+  assert.equal('task_id' in payload, false);
+  assert.equal('role_binding' in payload, false);
+});
+
+test('进程外唤醒载荷默认值：round 1 / triple / 不预估子 agent', () => {
+  const payload = externalWakePayload({ role: 'reviewer', taskId: 't', workspaceDir: '/w' });
+  assert.equal(payload.round, 1);
+  assert.equal(payload.roleBinding, 'triple');
+  assert.equal(payload.estimateSubagents, false);
+  assert.equal(payload.cold, false);
+  assert.equal(payload.stage, '');
+});
+
 test('工具描述齐全且名字固定', () => {
   assert.equal(TOOL_SPECS.length, 4);
   const names = TOOL_SPECS.map((s) => s.name).sort();
