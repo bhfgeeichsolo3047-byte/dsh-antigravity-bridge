@@ -327,8 +327,34 @@ export function buildToolDefinitions({ defineTool, handlers, extraSpecs = [] }) 
   });
 }
 
-/** 工具返回值的统一文本渲染（client.js 与 CLI 都能直接用）。 */
+/** 渲染时给 data 块留的字符预算：超过就截断并注明，绝不吐半截 JSON。 */
+export const RENDER_DATA_MAX_CHARS = 8000;
+
+/**
+ * 工具返回值的统一文本渲染（client.js 与 CLI 都能直接用）。
+ *
+ * 宿主只把 output.render 的文本喂给模型，`data` 字段（task_root / plan_path /
+ * findings / instruction 等）不进模型视野 —— 早先只渲染 message 时，Executor 拿到
+ * 「审核驳回，请按下面这段返工」却看不到 instruction，等于把返工指令丢了。
+ * 所以有非空 data 时在首行状态后追加一段 JSON；没有 data 时保持原单行输出。
+ */
 export function renderToolResult(value) {
   if (!value || typeof value !== 'object') return String(value ?? '');
-  return value.ok ? `✅ ${value.message ?? '完成'}` : `❌ ${value.message ?? '失败'}`;
+  const head = value.ok ? `✅ ${value.message ?? '完成'}` : `❌ ${value.message ?? '失败'}`;
+  const data = value.data;
+  if (!data || typeof data !== 'object') return head;
+  // 空对象 / 空数组不追加，保持单行（roles-tools.test.mjs 断言过 `/^✅ 好的$/`）。
+  if (!Array.isArray(data) && Object.keys(data).length === 0) return head;
+  if (Array.isArray(data) && data.length === 0) return head;
+  let body;
+  try {
+    body = JSON.stringify(data, null, 2);
+  } catch {
+    return head;
+  }
+  if (!body) return head;
+  if (body.length > RENDER_DATA_MAX_CHARS) {
+    body = `${body.slice(0, RENDER_DATA_MAX_CHARS)}\n…（data 已截断，完整内容见工作台文件）`;
+  }
+  return `${head}\n${body}`;
 }

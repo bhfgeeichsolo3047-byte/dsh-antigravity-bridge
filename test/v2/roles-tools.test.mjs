@@ -27,6 +27,7 @@ import {
   createCollabWriteHandler,
   createMarkBlockedHandler,
   createSubmitForReviewHandler,
+  RENDER_DATA_MAX_CHARS,
   renderToolResult,
 } from '../../plugin/dsh-agy-collab/lib/v2/tools.js';
 
@@ -411,4 +412,37 @@ test('renderToolResult 成功与失败两种前缀', () => {
   assert.match(renderToolResult({ ok: true, message: '好的' }), /^✅ 好的$/);
   assert.match(renderToolResult({ ok: false, message: '不行' }), /^❌ 不行$/);
   assert.equal(renderToolResult(null), '');
+});
+
+test('renderToolResult 把 data 一并渲染给模型（否则 instruction / task_root 全丢）', () => {
+  const text = renderToolResult({
+    ok: true,
+    message: '审核驳回，请按下面这段返工。',
+    data: {
+      task_root: 'C:/ws/t-1',
+      plan_path: 'C:/ws/t-1/02-执行方案/plan.md',
+      tasks_path: 'C:/ws/t-1/03-任务清单/tasks.md',
+      findings: [{ id: 'F1', required_fix: '加 min/max 校验' }],
+      instruction: '第 2 轮返工。',
+    },
+  });
+  const lines = text.split('\n');
+  assert.equal(lines[0], '✅ 审核驳回，请按下面这段返工。', '首行仍是状态行');
+  const json = JSON.parse(lines.slice(1).join('\n'));
+  assert.equal(json.task_root, 'C:/ws/t-1');
+  assert.equal(json.plan_path, 'C:/ws/t-1/02-执行方案/plan.md');
+  assert.equal(json.tasks_path, 'C:/ws/t-1/03-任务清单/tasks.md');
+  assert.equal(json.findings[0].required_fix, '加 min/max 校验');
+  assert.equal(json.instruction, '第 2 轮返工。');
+});
+
+test('renderToolResult 的 data 为空时不追加，超长时截断并注明', () => {
+  assert.match(renderToolResult({ ok: true, message: 'x', data: {} }), /^✅ x$/);
+  assert.match(renderToolResult({ ok: true, message: 'x', data: [] }), /^✅ x$/);
+
+  const huge = renderToolResult({ ok: true, message: 'x', data: { blob: 'a'.repeat(RENDER_DATA_MAX_CHARS * 2) } });
+  assert.ok(huge.length < RENDER_DATA_MAX_CHARS * 2, '必须截断');
+  assert.match(huge, /data 已截断/);
+  // 截断后不该留下半截 JSON 还能被当成完整对象解析 —— 这里只要求带明确说明
+  assert.ok(huge.startsWith('✅ x\n'));
 });

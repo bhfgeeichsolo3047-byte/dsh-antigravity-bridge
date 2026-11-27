@@ -107,10 +107,10 @@ function revisionDoc(round) {
  * followup 时执行剧本（用 collab_write 写文件），whenIdle 立刻返回。
  */
 function makeFakeAgents(script) {
-  const record = { created: [], restrictCalls: [], registered: [], promptSections: [] };
+  const record = { created: [], restrictCalls: [], registered: [], promptSections: [], messages: [] };
   const agents = {
-    create: async ({ sessionId, meta, setup }) => {
-      record.created.push({ sessionId, meta });
+    create: async ({ sessionId, meta, agentOptions, setup }) => {
+      record.created.push({ sessionId, meta, agentOptions });
       const registered = [];
       const agentCtx = {
         tools: {
@@ -130,7 +130,8 @@ function makeFakeAgents(script) {
         whenIdle: async () => {
           while (inflight.length) await Promise.all(inflight.splice(0));
         },
-        followup: () => {
+        followup: (message) => {
+          record.messages.push({ role, message });
           script({ role, registered, taskRoot: meta.cwd, pending: inflight });
         },
       };
@@ -151,7 +152,7 @@ function writeVia(registered, args, pending) {
   pending.push(tool.execute(args));
 }
 
-function makeOrchestrator({ script, config, dataDir, root, runGit = null }) {
+function makeOrchestrator({ script, config, dataDir, root, runGit = null, resolveRoleRoute }) {
   const { agents, record } = makeFakeAgents(script);
   const orch = createOrchestrator({
     dataDir,
@@ -162,6 +163,11 @@ function makeOrchestrator({ script, config, dataDir, root, runGit = null }) {
     now: () => NOW,
     runGit,
     log: () => {},
+    // 真实宿主里由装配层在每次工具调用处现算 route 显式传入；这里给一个兜底来源，
+    // 只为覆盖「调用方没传 route」的分支，不代表生产路径。
+    resolveRoleRoute: resolveRoleRoute === undefined
+      ? () => ({ provider: 'test-provider', model: 'test-model' })
+      : resolveRoleRoute,
   });
   // 把 workspaceRoot 指到临时目录，避免碰到真实 home
   config.workspaceRoot = root;
@@ -842,6 +848,194 @@ test('返工第一次没写 05 时原地重试一次，第二次写成即推进�
   orch.shutdown();
   fs.rmSync(dataDir, { recursive: true, force: true });
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('显式 route 会透传给 agents.create 的 agentOptions', async () => {
+  const dataDir = tmpDir();
+  const root = tmpDir();
+  const { orch, record } = makeOrchestrator({
+    config: enabledConfig(root),
+    dataDir,
+    root,
+    script: ({ role, registered, pending }) => {
+      if (role !== 'planner') return;
+      writeVia(registered, { slot: 'plan', filename: 'plan.md', content: planDoc() }, pending);
+      writeVia(registered, { slot: 'tasks', filename: 'tasks.md', content: tasksDoc() }, pending);
+    },
+  });
+  orch.boot();
+  orch.startTask({ sessionId: 'sess-1', requestText: '需求' });
+  const drafted = await orch.runDrafting({ route: { provider: 'live-provider', model: 'live-model' } });
+  assert.equal(drafted.ok, true, drafted.error);
+  assert.deepEqual(record.created[0].agentOptions, { provider: 'live-provider', model: 'live-model' });
+  orch.shutdown();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('拿不到路由时 runDrafting 明确失败，且根本没起过角色实例', async () => {
+  const dataDir = tmpDir();
+  const root = tmpDir();
+  const { orch, record } = makeOrchestrator({
+    config: enabledConfig(root),
+    dataDir,
+    root,
+    // 模拟装配层读不到当前会话的 provider/model
+    resolveRoleRoute: () => null,
+    script: () => {},
+  });
+  orch.boot();
+  orch.startTask({ sessionId: 'sess-1', requestText: '需求' });
+  const drafted = await orch.runDrafting({ route: null });
+  assert.equal(drafted.ok, false);
+  assert.match(drafted.error, /拿不到当前会话的 provider\/model/);
+  assert.equal(record.created.length, 0, '拿不到路由时不许把 agent 建出来再让它 preStep 抛错');
+  orch.shutdown();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('角色配了 model 覆盖：同模型继承 reasoningEffort，异模型不继承', async () => {
+  const dataDir = tmpDir();
+  const root = tmpDir();
+  const base = {
+    provider: 'live-provider',
+    model: 'live-model',
+    reasoningEffort: 'high',
+  };
+
+  // 覆盖成同一个模型 → 保留 reasoningEffort
+  {
+    const config = enabledConfig(root);
+    config.roles.planner.model = 'live-model';
+    const { orch, record } = makeOrchestrator({
+      config,
+      dataDir,
+      root,
+      script: ({ role, registered, pending }) => {
+        if (role !== 'planner') return;
+        writeVia(registered, { slot: 'plan', filename: 'plan.md', content: planDoc() }, pending);
+        writeVia(registered, { slot: 'tasks', filename: 'tasks.md', content: tasksDoc() }, pending);
+      },
+    });
+    orch.boot();
+    orch.startTask({ sessionId: 'sess-1', requestText: '需求' });
+    const drafted = await orch.runDrafting({ route: base });
+    assert.equal(drafted.ok, true, drafted.error);
+    assert.deepEqual(record.created[0].agentOptions, {
+      provider: 'live-provider',
+      model: 'live-model',
+      reasoningEffort: 'high',
+    });
+    orch.shutdown();
+  }
+
+  // 覆盖成另一个模型 → 只带 provider + model（跨模型透传 reasoningEffort 会触发上游 400）
+  {
+    const config = enabledConfig(root);
+    config.roles.planner.model = 'other-model';
+    const { orch, record } = makeOrchestrator({
+      config,
+      dataDir,
+      root,
+      script: ({ role, registered, pending }) => {
+        if (role !== 'planner') return;
+        writeVia(registered, { slot: 'plan', filename: 'plan.md', content: planDoc() }, pending);
+        writeVia(registered, { slot: 'tasks', filename: 'tasks.md', content: tasksDoc() }, pending);
+      },
+    });
+    orch.boot();
+    orch.startTask({ sessionId: 'sess-1', requestText: '需求' });
+    const drafted = await orch.runDrafting({ route: base });
+    assert.equal(drafted.ok, true, drafted.error);
+    assert.deepEqual(record.created[0].agentOptions, {
+      provider: 'live-provider',
+      model: 'other-model',
+    });
+    orch.shutdown();
+  }
+
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('审核消息带上 Host 采集的仓库 Git 快照（Reviewer 自己跑不了 git）', async () => {
+  const dataDir = tmpDir();
+  const root = tmpDir();
+  const repoCwd = tmpDir('agy-v2-repo-');
+  const runGit = (cwd, args) => {
+    const key = Array.isArray(args) ? args.join(' ') : String(args ?? '');
+    if (key === 'status --porcelain') return ' M src/a.js\n';
+    if (key === 'diff --stat HEAD') return ' src/a.js | 2 +-\n';
+    if (key === 'diff HEAD') return 'diff --git a/src/a.js b/src/a.js\n+// 改了一行\n';
+    return '';
+  };
+  const { orch, record } = makeOrchestrator({
+    config: enabledConfig(root),
+    dataDir,
+    root,
+    runGit,
+    script: ({ role, registered, pending }) => {
+      if (role !== 'reviewer') return;
+      writeVia(registered, { slot: 'review', filename: 'review-r1.md', content: reviewDoc({ round: 1, verdict: 'pass' }) }, pending);
+    },
+  });
+  orch.boot();
+  const started = orch.startTask({ sessionId: 'sess-1', requestText: '需求', repoCwd });
+  fs.writeFileSync(filePath(started.paths, 'plan', 'plan.md'), planDoc());
+  fs.writeFileSync(filePath(started.paths, 'tasks', 'tasks.md'), tasksDoc());
+  orch.applyEvent('plan-validated');
+  orch.startRound();
+  await orch.executorHandlers().collab_submit_for_review({});
+
+  const reviewed = await orch.runReview();
+  assert.equal(reviewed.ok, true, reviewed.error);
+  assert.equal(reviewed.verdict, 'pass');
+
+  const reviewMessage = record.messages.find((m) => m.role === 'reviewer');
+  assert.ok(reviewMessage, 'Reviewer 必须收到过一条消息');
+  const text = reviewMessage.message?.content?.[0]?.text ?? '';
+  assert.match(text, /Host 采集的仓库 Git 客观快照/);
+  assert.match(text, /M src\/a\.js/);
+  assert.match(text, /src\/a\.js \| 2 \+-/);
+  assert.match(text, /改了一行/);
+
+  orch.shutdown();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(repoCwd, { recursive: true, force: true });
+});
+
+test('仓库不是 git 仓库时审核消息不追加空证据段', async () => {
+  const dataDir = tmpDir();
+  const root = tmpDir();
+  const repoCwd = tmpDir('agy-v2-repo-');
+  const runGit = () => '';
+  const { orch, record } = makeOrchestrator({
+    config: enabledConfig(root),
+    dataDir,
+    root,
+    runGit,
+    script: ({ role, registered, pending }) => {
+      if (role !== 'reviewer') return;
+      writeVia(registered, { slot: 'review', filename: 'review-r1.md', content: reviewDoc({ round: 1, verdict: 'pass' }) }, pending);
+    },
+  });
+  orch.boot();
+  const started = orch.startTask({ sessionId: 'sess-1', requestText: '需求', repoCwd });
+  fs.writeFileSync(filePath(started.paths, 'plan', 'plan.md'), planDoc());
+  fs.writeFileSync(filePath(started.paths, 'tasks', 'tasks.md'), tasksDoc());
+  orch.applyEvent('plan-validated');
+  orch.startRound();
+  await orch.executorHandlers().collab_submit_for_review({});
+  const reviewed = await orch.runReview();
+  assert.equal(reviewed.ok, true, reviewed.error);
+  const text = record.messages.find((m) => m.role === 'reviewer')?.message?.content?.[0]?.text ?? '';
+  assert.equal(text.includes('Host 采集的仓库 Git 客观快照'), false);
+  orch.shutdown();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(repoCwd, { recursive: true, force: true });
 });
 
 test('返工两次都没交付 05：明确失败交回调用方，状态停在 revising 且不记越权', async () => {

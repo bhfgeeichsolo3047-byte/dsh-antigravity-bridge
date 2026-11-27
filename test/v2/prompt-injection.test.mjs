@@ -21,6 +21,20 @@ test('插件自建角色不注入协作提示词（origin 不是 subagent，只�
   resetActorSessions();
 });
 
+test('v2 已启用时 v1 协作提示词一律不注入（v2 走进程内工作台闭环）', () => {
+  resetActorSessions();
+  const enabled = () => true;
+  const v2On = { env: { DSH_AGY_COLLAB_V2: '1' } };
+  const v2Off = { env: { DSH_AGY_COLLAB_V2: '0' } };
+  // v2 开着：普通会话也不注入 v1 三铁律
+  assert.equal(shouldInjectCollabPrompt(ctxOf('sess-1'), { enabledCheck: enabled, ...v2On }), false);
+  // v2 关着：v1 行为 100% 不变
+  assert.equal(shouldInjectCollabPrompt(ctxOf('sess-1'), { enabledCheck: enabled, ...v2Off }), true);
+  // 没传 env 时读 process.env；这里显式传空对象模拟「未设该变量」
+  assert.equal(shouldInjectCollabPrompt(ctxOf('sess-1'), { enabledCheck: enabled, env: {} }), true);
+  resetActorSessions();
+});
+
 test('宿主子代理与关着的会话都不注入', () => {
   resetActorSessions();
   const enabled = () => true;

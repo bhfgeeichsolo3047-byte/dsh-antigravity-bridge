@@ -23,6 +23,7 @@ import {
   removeHostTree,
   snapshotTree,
   assertSnapshotDelta,
+  collectRepoGitEvidence,
   gitStatusPorcelain,
   sha256OfFile,
   sweepOrphans,
@@ -99,6 +100,10 @@ export function createOrchestrator(deps = {}) {
     runGit = null,
     deliver = (agent, message) => agent.followup(message),
     createUserMessage = null,
+    // 角色实例的路由来源。宿主 agents.create() 不会替我们继承父会话的 provider/model
+    // （只有 dsh-subagent 的 child-agent 会），所以必须显式传，否则进程内角色一进
+    // preStep 就抛 "has no provider/model"。由装配层注入「当前会话正在用的路由」。
+    resolveRoleRoute = null,
     hostPid = process.pid,
     bootId = resolveBootId({ now: now() }),
     // 全局工具清单必须「调用时」读：dsh-tool-fs / dsh-tool-bash 可能在插件挂载之后才注册，
@@ -337,10 +342,60 @@ export function createOrchestrator(deps = {}) {
   }
 
   /**
+   * 角色实例的路由（provider + model）。
+   *
+   * 宿主 `agents.create()` 只把 options 原样交给 AgentLoop，不会替调用方继承父会话路由
+   * ——只有 dsh-subagent 的 child-agent.ts:98 resolveChildAgentOptions 会做这件事，
+   * 而我们走的是裸 create。路由必须由装配层显式提供，否则进程内角色一进 preStep 就抛
+   * `has no provider/model`（dsh-agent-loop/src/agent.ts:296），任务永久卡在 drafting。
+   *
+   * 优先级：角色显式配置的 model（provider 沿用当前会话）> 当前会话的活路由。
+   *
+   * 路由由调用方显式传入（`explicitRoute`）：装配层在每次工具调用时用当次 exec 算出纯数据
+   * 值对象，算完就丢，编排器不持有 exec/agent/session 任何引用 —— 持有会让会话对象跟着
+   * 编排器活到进程结束（泄漏），也会让「这一次调用用的是哪条路由」变成隐式时序。
+   * `resolveRoleRoute` 只剩单测注入兜底。
+   *
+   * reasoningEffort 只在「覆盖后的模型与当前会话是同一个模型」时继承：不同模型的
+   * reasoningEffort 枚举集不同甚至完全不支持，跨模型盲透传会触发上游 400。
+   * @param {string} role
+   * @param {{ provider: string, model: string, reasoningEffort?: string } | null} [explicitRoute]
+   * @returns {{ provider: string, model: string, reasoningEffort?: string } | null}
+   */
+  function roleRouteFor(role, explicitRoute = null) {
+    let live = null;
+    if (explicitRoute && explicitRoute.provider && explicitRoute.model) {
+      live = explicitRoute;
+    } else {
+      try {
+        const resolved = typeof resolveRoleRoute === 'function' ? resolveRoleRoute() : null;
+        if (resolved && resolved.provider && resolved.model) live = resolved;
+      } catch (error) {
+        log(`[v2] 读取当前会话路由失败：${error?.message ?? error}`);
+      }
+    }
+    const override = config?.roles?.[role]?.model;
+    if (override) {
+      if (!live?.provider) return null;
+      const model = String(override);
+      if (model === String(live.model)) {
+        const same = { provider: live.provider, model };
+        if (live.reasoningEffort) same.reasoningEffort = live.reasoningEffort;
+        return same;
+      }
+      return { provider: live.provider, model };
+    }
+    return live;
+  }
+
+  /**
    * 起一个进程内角色、把提示词递进去、等它跑完、然后销毁（冷调用）。
+   *
+   * `route` 是调用方当次算好的纯数据值对象（provider/model/reasoningEffort 三个字符串），
+   * 编排器只读它、不存它，也不碰产生它的 exec。
    * @returns {Promise<{ ok: boolean, sessionId?: string, error?: string, allow?: string[] }>}
    */
-  async function runRole({ role, round = state.task?.round ?? 1, message }) {
+  async function runRole({ role, round = state.task?.round ?? 1, message, route = null }) {
     if (!agents) return { ok: false, error: 'agents 服务不可用，进程内角色无法启动' };
     if (!state.paths) return { ok: false, error: '没有正在进行的任务' };
 
@@ -371,12 +426,22 @@ export function createOrchestrator(deps = {}) {
       log('[v2] defineTool 未注入，进程内角色没有 collab_write 通道');
     }
 
+    // 路由必须显式给：宿主 agents.create() 不继承父会话的 provider/model。
+    // 拿不到就当场失败，别让 agent 建出来才在 preStep 抛 "has no provider/model"。
+    const roleRoute = roleRouteFor(role, route);
+    if (!roleRoute) {
+      return {
+        ok: false,
+        error: `拿不到当前会话的 provider/model，${role} 进程内角色无法启动（请在设置里选一个模型后重试）`,
+      };
+    }
+
     const spawned = await spawnInProcessRole({
       agents,
       role,
       taskId: state.task.task_id,
       workspaceDir: state.paths.taskRoot,
-      agentOptions: config.roles?.[role]?.model ? { model: config.roles[role].model } : undefined,
+      agentOptions: roleRoute,
       promptSection: {
         name: `agy-collab-${role}`,
         order: 5200,
@@ -417,8 +482,11 @@ export function createOrchestrator(deps = {}) {
     return { ok: true, sessionId: spawned.sessionId, allow: spawned.allow };
   }
 
-  /** 规划阶段：起 Planner 写 02 与 03，然后校验并推进到 ready（T3）。 */
-  async function runDrafting() {
+  /**
+   * 规划阶段：起 Planner 写 02 与 03，然后校验并推进到 ready（T3）。
+   * @param {{ route?: object }} [opts]
+   */
+  async function runDrafting({ route = null } = {}) {
     if (!state.task) return { ok: false, error: '没有正在进行的任务' };
     if (state.task.state !== 'drafting') return { ok: false, error: `drafting 阶段才能规划，当前是 ${state.task.state}` };
 
@@ -440,7 +508,7 @@ export function createOrchestrator(deps = {}) {
           .filter(Boolean)
           .join('\n'),
       );
-      const roleRun = await runWithSnapshot(allowedRel, () => runRole({ role: 'planner', round: 1, message }));
+      const roleRun = await runWithSnapshot(allowedRel, () => runRole({ role: 'planner', round: 1, message, route }));
       if (!roleRun.ok) return roleRun;
       if (roleRun.overreach) return { ok: false, error: `规划阶段出现越权写入：${roleRun.overreach.join('、')}` };
 
@@ -498,9 +566,9 @@ export function createOrchestrator(deps = {}) {
 
   /**
    * 审核阶段：起 Reviewer（冷调用）写 04 或 06，然后按 verdict 推进。
-   * @param {{ mode?: 'auto' | 'manual' }} [opts]
+   * @param {{ route?: object }} [opts]
    */
-  async function runReview() {
+  async function runReview({ route = null } = {}) {
     if (!state.task) return { ok: false, error: '没有正在进行的任务' };
     const slot = reviewSlotFor(state.task.state, {
       round: state.task.round,
@@ -518,11 +586,17 @@ export function createOrchestrator(deps = {}) {
     for (let attempt = 1; attempt <= PROTOCOL_RETRY_LIMIT + 1; attempt += 1) {
       const before = snapshotTree(state.paths.taskRoot);
       const repoBefore = repoStatus();
+      // Reviewer 没有 shell（ADR-0001），自己看不到仓库。Host 采一份只读 Git 快照当证据源，
+      // 否则「审核仓库客观产物」会退化成「审核 Planner 写在六目录里的叙述」。
+      const repoEvidence = collectRepoGitEvidence(state.task.repo_cwd, { runGit });
       const message = makeUserMessage(
         [
           `请审核。任务 id ${state.task.task_id}，第 ${round} 轮，审核档位 ${config.reviewer_mode}。`,
           '先读 03-任务清单/tasks.md 弄清需求与目的，再看仓库的客观产物判断是否达成。',
           `把结论写到 ${WORKSPACE_DIRS[slot]}/${fileName}。`,
+          repoEvidence
+            ? `【Host 采集的仓库 Git 客观快照】\n${repoEvidence}`
+            : '',
           attempt > 1
             ? `上一次调用没有交出合法产物（${lastProtocolFailure ?? '产物不合规'}）。这次请原地重写同一个文件 ${WORKSPACE_DIRS[slot]}/${fileName}，不要新建别的文件。`
             : '',
@@ -530,7 +604,7 @@ export function createOrchestrator(deps = {}) {
           .filter(Boolean)
           .join('\n'),
       );
-      const roleRun = await runRole({ role: 'reviewer', round, message });
+      const roleRun = await runRole({ role: 'reviewer', round, message, route });
       if (!roleRun.ok) return roleRun;
 
       const after = snapshotTree(state.paths.taskRoot);
@@ -596,7 +670,7 @@ export function createOrchestrator(deps = {}) {
    * 但也不能直接返回让任务卡死在 revising，所以原地重试一次（最多 2 次），
    * 两次都失败才交回调用方（v2/index.js 会提示可以 collab_abort）。
    */
-  async function runRevision() {
+  async function runRevision({ route = null } = {}) {
     if (!state.task) return { ok: false, error: '没有正在进行的任务' };
     if (state.task.state !== 'revising') return { ok: false, error: `当前状态 ${state.task.state} 不是返工阶段` };
     const round = Number(state.task.round);
@@ -618,7 +692,7 @@ export function createOrchestrator(deps = {}) {
           `上一次调用没有交出合法产物（${lastFailure ?? '未知原因'}）。请原地重写同一个文件 05-修改方案/${fileName}，不要换文件名、不要解释。`,
         );
       }
-      const roleRun = await runRole({ role: 'planner', round, message: makeUserMessage(lines.join('\n')) });
+      const roleRun = await runRole({ role: 'planner', round, message: makeUserMessage(lines.join('\n')), route });
       if (!roleRun.ok) return roleRun;
 
       const after = snapshotTree(state.paths.taskRoot);

@@ -88,7 +88,10 @@ function makeLateCtx({ script }) {
       view: () => ({ knownNames: [...lateNames], restrictableNames: [...lateNames] }),
       definitions: () => lateNames.map((name) => ({ name })),
     },
-    agent: { session: { header: { id: 'sess-late' } } },
+    agent: {
+    session: { header: { id: 'sess-late' } },
+    model: { current: () => ({ provider: 'test-provider', model: 'test-model' }) },
+  },
     effect: (fn, label) => record.effects.push({ fn, label }),
   };
   const ctx = {
@@ -110,7 +113,12 @@ function writeVia(registered, args, pending) {
 }
 
 function execFor(sessionId) {
-  return { agent: { session: { header: { id: sessionId, cwd: null } } } };
+  return {
+    agent: {
+      session: { header: { id: sessionId, cwd: null } },
+      model: { current: () => ({ provider: 'test-provider', model: 'test-model' }) },
+    },
+  };
 }
 
 function prepareConfig(dataDir, workspaceRoot, sessionIds) {

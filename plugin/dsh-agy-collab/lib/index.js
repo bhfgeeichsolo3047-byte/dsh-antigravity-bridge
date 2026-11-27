@@ -240,15 +240,21 @@ function buildCollabPrompt() {
 /**
  * 该会话要不要注入协作提示词（规格 §6.9 的判据集中在这里，便于离线测试）。
  *
- * 三条排除理由：
+ * 四条排除理由：
  *   1. 宿主自己起的子代理带 origin === 'subagent'，不重复触发主代理的开局转达；
  *   2. 插件自己 ctx.agents.create() 出来的角色没有那个标记
  *      （dsh-subagent/src/child-agent.ts:152），只能查插件自持的 actor 白名单；
- *   3. 会话开关是关的。
+ *   3. 会话开关是关的；
+ *   4. v2 已启用（DSH_AGY_COLLAB_V2=1）—— v2 是进程内工作台闭环，不需要外部
+ *      agy_collab_relay 的三铁律。不排除的话，v2 会话会被注入一段要求它去调
+ *      v1 relay 的提示词，模型会真的去调一个当前流程里不存在的工具。
+ *      未设这个变量时本函数行为与 v1 完全一致。
  */
 export function shouldInjectCollabPrompt(context, deps = {}) {
   const actorCheck = deps.actorCheck ?? isActorSession;
   const enabledCheck = deps.enabledCheck ?? isCollabEnabled;
+  const env = deps.env ?? process.env;
+  if (String(env?.DSH_AGY_COLLAB_V2 ?? '') === '1') return false;
   const origin = context?.agent?.session?.header?.origin;
   if (origin === 'subagent') return false;
   const sid = sessionIdOfContext(context);

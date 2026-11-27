@@ -9,6 +9,7 @@ import {
   SLOT_ORDER,
   allowedFileNames,
   assertSnapshotDelta,
+  collectRepoGitEvidence,
   createWorkspace,
   diffSnapshot,
   filePath,
@@ -133,6 +134,43 @@ test('越权判定：差集必须恰好是允许的那个文件', () => {
   assert.equal(dirty.ok, false);
   assert.deepEqual(dirty.extras, ['03-任务清单/tasks.md']);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('collectRepoGitEvidence 拼出 status / stat / diff 三段', () => {
+  const calls = [];
+  const runGit = (_cwd, args) => {
+    calls.push(args.join(' '));
+    if (args[0] === 'status') return ' M src/a.js\n';
+    if (args[0] === 'diff' && args.includes('--stat')) return ' src/a.js | 2 +-\n';
+    if (args[0] === 'diff') return 'diff --git a/src/a.js b/src/a.js\n+// 改了一行\n';
+    return '';
+  };
+  const text = collectRepoGitEvidence('/repo', { runGit });
+  assert.deepEqual(calls, ['status --porcelain', 'diff --stat HEAD', 'diff HEAD']);
+  assert.match(text, /--- git status --porcelain ---/);
+  assert.match(text, /--- git diff --stat HEAD ---/);
+  assert.match(text, /--- git diff HEAD ---/);
+  assert.match(text, /改了一行/);
+});
+
+test('collectRepoGitEvidence 超长 diff 截断并注明总长度', () => {
+  const runGit = (_cwd, args) => {
+    if (args[0] === 'status') return ' M src/a.js\n';
+    if (args[0] === 'diff' && args.includes('--stat')) return '';
+    return 'x'.repeat(500);
+  };
+  const text = collectRepoGitEvidence('/repo', { runGit, maxDiffChars: 100 });
+  assert.match(text, /已截断到 100 字符，共 500/);
+  assert.equal(text.includes('x'.repeat(101)), false);
+});
+
+test('collectRepoGitEvidence 非 git 目录 / 空 cwd 都返回空串，不抛错', () => {
+  assert.equal(collectRepoGitEvidence('', { runGit: () => '' }), '');
+  assert.equal(collectRepoGitEvidence('/repo', { runGit: () => '' }), '');
+  const thrower = () => {
+    throw new Error('not a git repository');
+  };
+  assert.equal(collectRepoGitEvidence('/repo', { runGit: thrower }), '');
 });
 
 test('isPidAlive 对当前进程为真，对不可能存在的 pid 为假', () => {

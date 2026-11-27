@@ -34,6 +34,7 @@ import {
   createAbortHandler,
   createMarkBlockedHandler,
   createSubmitForReviewHandler,
+  renderToolResult,
 } from './tools.js';
 
 /** 打开 v2 的唯一开关。 */
@@ -88,8 +89,10 @@ async function loadDefineTool() {
     parameters: compileParameterSchemaSpec(spec.parameters),
     output: {
       schema: spec.output?.schema ?? TOOL_OUTPUT_SCHEMA,
+      // 兜底渲染必须与 buildToolDefinitions 用同一个渲染器：早先这里只吐 message，
+      // 宿主没装 @deepseek-ai/dsh-tools 时 data（instruction / task_root）会被整个丢掉。
       render: spec.output?.render
-        ?? ((_args, value) => [{ type: 'text', text: String(value?.message ?? '') }]),
+        ?? ((_args, value) => [{ type: 'text', text: renderToolResult(value) }]),
     },
     execute: spec.execute,
   });
@@ -170,6 +173,7 @@ export async function mountV2(ctx, opts = {}) {
         }
       }
     }
+    // 编排器里只留纯数据；会话路由是每次调用现算的局部变量，没有需要额外清空的缓存。
     orchestrators.clear();
   };
 
@@ -180,7 +184,13 @@ export async function mountV2(ctx, opts = {}) {
     const knownGlobalTools = toolsService ? knownGlobalToolNames(toolsService) : [];
     let booted = false;
 
-    /** 取（或懒建）某个会话的编排器：一个会话一个实例，state.task 不互相覆盖。 */
+    /**
+     * 取（或懒建）某个会话的编排器：一个会话一个实例，state.task 不互相覆盖。
+     *
+     * 编排器**不持有 exec**：会话路由由每个工具调用处现算成纯数据值对象传进去。
+     * 早先这里存过一个 exec 引用表（orchestratorExec），既让 agent/session 跟着编排器
+     * 活到进程结束（泄漏），又把「这一次调用用的是哪条路由」变成隐式时序。
+     */
     const orchestratorFor = (sessionId) => {
       const key = String(sessionId ?? '').trim();
       if (!key) return null;
@@ -223,12 +233,49 @@ export async function mountV2(ctx, opts = {}) {
       }
     };
 
+    /**
+     * 当前会话正在用的 provider/model —— 进程内角色实例必须显式带上它。
+     *
+     * 宿主 agents.create() 不会替我们继承父会话路由（只有 dsh-subagent 的
+     * child-agent.ts:98 会），不给就会在 preStep 抛 "has no provider/model"。
+     * 三路来源按可靠性排序：Executor agent 的活选择 > 会话最近一次请求头 > scope 上的 agent。
+     */
+    const resolveSessionRoute = (exec) => {
+      const pick = (selection) => {
+        if (!selection || typeof selection !== 'object') return null;
+        const provider = String(selection.provider ?? '').trim();
+        const model = String(selection.model ?? '').trim();
+        if (!provider || !model) return null;
+        const out = { provider, model };
+        const effort = String(selection.reasoningEffort ?? '').trim();
+        if (effort) out.reasoningEffort = effort;
+        return out;
+      };
+      const sources = [
+        () => exec?.agent?.model?.current?.(),
+        () => exec?.agent?.session?.requestHeader?.()?.config,
+        () => scoped?.agent?.model?.current?.(),
+        () => scoped?.agent?.session?.requestHeader?.()?.config,
+      ];
+      for (const read of sources) {
+        try {
+          const route = pick(read());
+          if (route) return route;
+        } catch {
+          // 读不到就换下一路，不要因为一个来源抛错就整体失败
+        }
+      }
+      return null;
+    };
+
     // Host 侧工具：启动任务 + Executor 三件。角色侧工具在各自的 setup 里注册。
     const hostHandlers = {
       [START_TOOL_NAME]: async (args = {}, exec = null) => {
         const sessionId = resolveSessionId(args, exec);
         const orch = orchestratorFor(sessionId);
         if (!orch) return { ok: false, message: '拿不到会话 id，无法定位工作台' };
+        // 路由在调用处现算成纯对象：编排器不持有 exec，也不缓存路由。
+        const route = resolveSessionRoute(exec);
         try {
           const started = orch.startTask({
             sessionId,
@@ -237,7 +284,7 @@ export async function mountV2(ctx, opts = {}) {
             taskId: args.task_id,
             repoCwd: sessionCwd(exec),
           });
-          const drafting = await orch.runDrafting();
+          const drafting = await orch.runDrafting({ route });
           if (!drafting.ok) {
             return {
               ok: false,
@@ -257,7 +304,12 @@ export async function mountV2(ctx, opts = {}) {
           const requirementIds = drafting.requirementIds ?? [];
           return {
             ok: true,
-            message: `任务 ${started.taskId} 已进入 running，03 任务清单共 ${requirementIds.length} 条需求；按 02 执行方案的步骤改仓库，改完调 collab_submit_for_review。`,
+            message: [
+              `任务 ${started.taskId} 已进入 running，03 任务清单共 ${requirementIds.length} 条需求；按 02 执行方案的步骤改仓库，改完调 collab_submit_for_review。`,
+              // 双保险：v2 会话不该再去调 v1 的 agy_collab_relay（v1 提示词已被 DSH_AGY_COLLAB_V2 关掉，
+              // 但模型可能从历史上下文里想起旧协议，这里明说一句把它掐掉）。
+              '本任务走 v2 进程内工作台闭环，无需调用外部 agy_collab_relay。',
+            ].join('\n'),
             data: {
               task_id: started.taskId,
               task_root: started.paths.taskRoot,
@@ -277,6 +329,7 @@ export async function mountV2(ctx, opts = {}) {
       [TOOL_NAMES.submit]: async (args = {}, exec = null) => {
         const orch = orchestratorFor(resolveSessionId(args, exec));
         if (!orch) return { ok: false, message: '拿不到会话 id，无法定位工作台' };
+        const route = resolveSessionRoute(exec);
         const submit = createSubmitForReviewHandler({
           getTask: () => orch.getTask(),
           applyEvent: (event, opts) => orch.applyEvent(event, opts),
@@ -284,7 +337,7 @@ export async function mountV2(ctx, opts = {}) {
         const submitted = await submit(args);
         if (!submitted.ok) return submitted;
 
-        const review = await orch.runReview();
+        const review = await orch.runReview({ route });
         const task = orch.getTask();
         if (!review.ok) {
           return {
@@ -315,7 +368,7 @@ export async function mountV2(ctx, opts = {}) {
           };
         }
         if (review.state === 'revising') {
-          const revision = await orch.runRevision();
+          const revision = await orch.runRevision({ route });
           if (!revision.ok) {
             // 两次原地重写都没交付：任务卡在 revising 不会自己前进，明确提示可以中止。
             return {

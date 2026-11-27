@@ -93,6 +93,7 @@ function makeOrchestrator({ script, config, dataDir, root, runGit = null }) {
     now: () => NOW,
     runGit,
     log: () => {},
+    resolveRoleRoute: () => ({ provider: 'test-provider', model: 'test-model' }),
   });
   config.workspaceRoot = root;
   return orch;

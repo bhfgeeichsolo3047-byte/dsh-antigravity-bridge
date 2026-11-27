@@ -309,3 +309,52 @@ export function gitStatusPorcelain(cwd, { run } = {}) {
     return '';
   }
 }
+
+/** Git 快照里 diff 正文的默认字符预算：超出就截断并注明，避免把整份 diff 塞进提示词。 */
+export const REPO_EVIDENCE_MAX_DIFF_CHARS = 6000;
+
+/**
+ * 采集仓库的客观 Git 快照，作为 Reviewer 的证据源（规格 §6.2「仓库客观产物」）。
+ *
+ * 为什么要 Host 侧采：ADR-0001 把角色的隔离面压到「无子进程、无 shell」，Reviewer
+ * 自己跑不了 git。但「审核者只看仓库客观产物」不能因此退化成只看六目录里 Planner 写的
+ * 文字 —— 那样审核的是别人的叙述，不是代码。所以由 Host（唯一可信的采集方）读一次
+ * 只读快照，作为证据附在审核消息里，角色本身仍然零子进程。
+ *
+ * 非 git 目录、git 不可用、仓库为空都返回空串，绝不抛错（审核不该因为采不到证据而中断）。
+ * @param {string} cwd
+ * @param {{ runGit?: function, maxDiffChars?: number }} [opts]
+ *   runGit(cwd, args) => string：注入执行器便于离线测试
+ * @returns {string}
+ */
+export function collectRepoGitEvidence(cwd, { runGit = null, maxDiffChars = REPO_EVIDENCE_MAX_DIFF_CHARS } = {}) {
+  const dir = String(cwd ?? '').trim();
+  if (!dir) return '';
+  const run = (args) => {
+    try {
+      if (typeof runGit === 'function') return String(runGit(dir, args) ?? '');
+      return String(execFileSync('git', args, { cwd: dir, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }) ?? '');
+    } catch {
+      return '';
+    }
+  };
+
+  const status = run(['status', '--porcelain']).trim();
+  const stat = run(['diff', '--stat', 'HEAD']).trim();
+  const diff = run(['diff', 'HEAD']);
+  // 三条全空 = 不是 git 仓库，或仓库干净且没有任何改动可看。
+  if (!status && !stat && !diff.trim()) return '';
+
+  const parts = [];
+  if (status) parts.push(`--- git status --porcelain ---\n${status}`);
+  if (stat) parts.push(`--- git diff --stat HEAD ---\n${stat}`);
+  if (diff.trim()) {
+    const trimmed = diff.trim();
+    parts.push(
+      trimmed.length > maxDiffChars
+        ? `--- git diff HEAD（已截断到 ${maxDiffChars} 字符，共 ${trimmed.length}）---\n${trimmed.slice(0, maxDiffChars)}`
+        : `--- git diff HEAD ---\n${trimmed}`,
+    );
+  }
+  return parts.join('\n\n');
+}

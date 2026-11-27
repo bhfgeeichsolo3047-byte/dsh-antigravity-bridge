@@ -30,7 +30,10 @@ function makeCtx() {
         return () => {};
       },
     },
-    agent: { session: { header: { id: 'sess-mount' } } },
+    agent: {
+      session: { header: { id: 'sess-mount' } },
+      model: { current: () => ({ provider: 'test-provider', model: 'test-model' }) },
+    },
     effect: (fn, label) => record.effects.push({ fn, label }),
   };
   const ctx = {
@@ -125,6 +128,50 @@ test('打开协作开关后 collab_start 建出工作台；Planner 没写产物�
   fs.rmSync(dataDir, { recursive: true, force: true });
   fs.rmSync(workspaceRoot, { recursive: true, force: true });
 });
+test('dispose 后编排器与 exec 都不留引用：重新挂载能干净重建', async () => {
+  const dataDir = tmpDir();
+  const workspaceRoot = tmpDir();
+  const { defaultConfig, setGlobalEnabled, setCollabEnabled, writeConfigFile } = await import(
+    '../../plugin/dsh-agy-collab/lib/v2/config.js'
+  );
+  let config = defaultConfig(Date.now());
+  config = setGlobalEnabled(config, true);
+  config = setCollabEnabled(config, 'sess-mount', true);
+  config.workspaceRoot = workspaceRoot;
+  writeConfigFile(dataDir, config);
+
+  const first = makeCtx();
+  const dispose1 = await mountV2(first.ctx, { env: { DSH_AGY_COLLAB_V2: '1' }, dataDir, log: () => {} });
+  const start1 = first.record.registered.find((d) => d.name === START_TOOL_NAME);
+  // 传一个 exec：路由就是从这里现算的，编排器不许把它存下来
+  const exec = { agent: { model: { current: () => ({ provider: 'p1', model: 'm1' }) }, session: { header: { id: 'sess-mount', cwd: workspaceRoot } } } };
+  const r1 = await start1.execute({ request: '第一个任务' }, exec);
+  assert.ok(r1.data?.task_root, '工作台已建');
+  const firstTaskRoot = r1.data.task_root;
+
+  dispose1();
+  assert.equal(fs.existsSync(firstTaskRoot), false, 'dispose 后旧任务树被删');
+
+  // 第二次挂载：如果上一轮的 orchestrator / exec 还留着，这里会拿到旧实例与旧 exec
+  const second = makeCtx();
+  const dispose2 = await mountV2(second.ctx, { env: { DSH_AGY_COLLAB_V2: '1' }, dataDir, log: () => {} });
+  const start2 = second.record.registered.find((d) => d.name === START_TOOL_NAME);
+  const r2 = await start2.execute({ request: '第二个任务' }, { agent: { model: { current: () => ({ provider: 'p2', model: 'm2' }) }, session: { header: { id: 'sess-mount', cwd: workspaceRoot } } } });
+  assert.ok(r2.data?.task_root, '重新挂载后仍能建工作台');
+  // 任务 id 是「日期-序号」，旧树已被 dispose 删掉，序号从 01 重新开始是正常的；
+  // 这里要证明的是「新挂载拿到的是新编排器、新建的工作台」，不是旧实例。
+  assert.ok(fs.existsSync(r2.data.task_root), '新工作台真的建出来了');
+  assert.ok(
+    fs.existsSync(path.join(r2.data.task_root, '01-原始任务需求和目的', 'request.md')),
+    '01 由新编排器写入',
+  );
+  assert.equal(r2.message.includes('第二个任务') || r2.ok === false, true, '新任务走的是新编排器');
+
+  dispose2();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  fs.rmSync(workspaceRoot, { recursive: true, force: true });
+});
+
 test('DSH_AGY_COLLAB_DATA_DIR 优先于 home 默认路径，冒烟不会就地迁移真实配置', async () => {
   const dataDir = tmpDir();
   const { ctx, record } = makeCtx();

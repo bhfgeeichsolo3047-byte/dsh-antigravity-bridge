@@ -120,7 +120,11 @@ function makeCtx({ script }) {
       },
       view: () => ({ knownNames: ['read', 'grep', 'glob', 'bash', 'write'] }),
     },
-    agent: { session: { header: { id: 'sess-A' } } },
+    // 真实宿主的 agent 上一定有 model.current()；进程内角色的路由从这里读。
+    agent: {
+      session: { header: { id: 'sess-A' } },
+      model: { current: () => ({ provider: 'test-provider', model: 'test-model' }) },
+    },
     effect: (fn, label) => record.effects.push({ fn, label }),
   };
   const ctx = {
@@ -141,7 +145,12 @@ function writeVia(registered, args, pending) {
 }
 
 function execFor(sessionId, cwd = null) {
-  return { agent: { session: { header: { id: sessionId, cwd } } } };
+  return {
+    agent: {
+      session: { header: { id: sessionId, cwd } },
+      model: { current: () => ({ provider: 'test-provider', model: 'test-model' }) },
+    },
+  };
 }
 
 function prepareConfig(dataDir, workspaceRoot, sessionIds) {
