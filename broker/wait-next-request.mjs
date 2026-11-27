@@ -87,8 +87,10 @@ function printSingleRequest(r) {
   console.log('================================================================');
   console.log('[DSH_BACKEND_RELAY] 收到来自 DeepSeek Harness (D) 的后台协作请求');
   console.log('================================================================');
+  const ageSec = Math.max(0, Math.round((Date.now() - (Number(r.createdAt) || Date.now())) / 1000));
   console.log(`Request ID : ${r.requestId}`);
   console.log(`Session ID : ${r.sessionId || '(default)'}`);
+  console.log(`Age        : ${ageSec}s (实时任务)`);
   console.log(`Phase      : ${r.phase} (${phaseDesc(r.phase, false)})`);
   console.log(`Workspace  : ${r.workspace || '(未指定)'}`);
   console.log('----------------------------------------------------------------');
@@ -117,11 +119,14 @@ function printBatchRequests(batch) {
   console.log('并行指引   :');
   console.log('  1. 请立即在后台重新启动 wait-next-request.mjs（当前批次已标记为已派发，重挂监听不会重复触发本批次）；');
   console.log(`  2. 请并发处理以下全部 ${batch.length} 个请求（可通过 invoke_subagent 启动多个 self Subagent 并行，或在同一轮并发调用只读工具与 reply-request.mjs），分别为每个 Request ID 独立回传结果。`);
+  console.log('  3. 仅需回复当前实时等待的任务；若发现同一 Session ID 存在旧请求或混入已过期的积压/探活请求，直接跳过旧请求不予回复。');
   for (let i = 0; i < batch.length; i++) {
     const r = batch[i];
+    const ageSec = Math.max(0, Math.round((Date.now() - (Number(r.createdAt) || Date.now())) / 1000));
     console.log('');
     console.log(`-------------------- [${i + 1}/${batch.length}] Request ID: ${r.requestId} --------------------`);
     console.log(`Session ID : ${r.sessionId || '(default)'}`);
+    console.log(`Age        : ${ageSec}s (实时任务)`);
     console.log(`Phase      : ${r.phase} (${phaseDesc(r.phase, true)})`);
     console.log(`Workspace  : ${r.workspace || '(未指定)'}`);
     console.log('【Task】:');

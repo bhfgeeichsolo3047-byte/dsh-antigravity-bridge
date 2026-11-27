@@ -214,14 +214,30 @@ pruneOldTaskDocs(MAX_DOC_FILES);
  */
 const aListeners = new Set();
 
+function pruneStaleBacklog(now = Date.now()) {
+  for (const [k, r] of requests.entries()) {
+    if (!r || r.status === 'replied') continue;
+    // Only expiry prunes. 'no waiters' is NOT a prune reason: a record is briefly
+    // waiter-less between requests.set() and record.dWaiters.push(), and pruning on
+    // that window silently killed every in-flight /relay.
+    const expired = now - (Number(r.createdAt) || 0) > (Number(r.timeoutMs) || 480_000);
+    if (expired) {
+      requests.delete(k);
+    }
+  }
+}
+
 function isEligibleForDispatch(r, now = Date.now()) {
   if (!r || r.status === 'replied') return false;
+  if (!Array.isArray(r.dWaiters) || r.dWaiters.length === 0) return false;
+  if (now - (Number(r.createdAt) || 0) > (Number(r.timeoutMs) || 480_000)) return false;
   if (!r.dispatched) return true;
   const age = now - (Number(r.dispatchedAt) || Number(r.createdAt) || 0);
   return age >= STALE_REDISPATCH_MS;
 }
 
 function hasEligibleRequest(now = Date.now()) {
+  pruneStaleBacklog(now);
   for (const r of requests.values()) {
     if (isEligibleForDispatch(r, now)) return true;
   }
@@ -243,6 +259,7 @@ function serializeRequestForA(r) {
 
 function claimEligibleBatch(maxBatch = 20) {
   const now = Date.now();
+  pruneStaleBacklog(now);
   const batch = [];
   for (const r of requests.values()) {
     if (isEligibleForDispatch(r, now)) {
@@ -329,6 +346,7 @@ const server = http.createServer(async (req, res) => {
   try {
     // 1. Health & status
     if (pathname === '/health' || pathname === '/status') {
+      pruneStaleBacklog();
       const sessionId = url.searchParams.get('sessionId') || '';
       const pendingList = [...requests.values()]
         .filter((r) => r.status !== 'replied')
@@ -357,6 +375,7 @@ const server = http.createServer(async (req, res) => {
     // 2. Get or toggle collaboration switch state
     if (pathname === '/state') {
       if (req.method === 'GET') {
+        pruneStaleBacklog();
         const sessionId = url.searchParams.get('sessionId') || '';
         const pendingList = [...requests.values()].filter((r) => r.status !== 'replied');
         sendJson(res, 200, {
@@ -449,6 +468,29 @@ const server = http.createServer(async (req, res) => {
         ? body.requestId.trim()
         : `req_${Date.now()}_${randomUUID().slice(0, 8)}`;
 
+      // 同会话新请求到达时自动作废旧的未回复请求，避免积压
+      if (sessionId) {
+        for (const [oldId, oldRec] of requests.entries()) {
+          if (oldRec && oldRec.sessionId === sessionId && oldRec.status !== 'replied') {
+            oldRec.status = 'superseded';
+            for (const waiter of oldRec.dWaiters.splice(0)) {
+              try {
+                waiter({
+                  ok: false,
+                  superseded: true,
+                  requestId: oldRec.requestId,
+                  error: '同会话已发起新协作请求，旧请求自动作废。',
+                });
+              } catch {
+                // ignore
+              }
+            }
+            appendHistory({ event: 'drop_backlog', requestId: oldId, reason: 'superseded' });
+            requests.delete(oldId);
+          }
+        }
+      }
+
       const record = {
         requestId,
         sessionId,
@@ -457,6 +499,7 @@ const server = http.createServer(async (req, res) => {
         context,
         executionReport,
         workspace,
+        timeoutMs,
         createdAt: Date.now(),
         repliedAt: null,
         status: 'pending',
@@ -476,15 +519,32 @@ const server = http.createServer(async (req, res) => {
         workspace,
       });
 
-      // Immediately wake up Agent A's background listener if waiting
-      notifyAListeners();
+      // NOTE: notifyAListeners() moved below, AFTER record.dWaiters.push(waiterFn).
+      // Calling it here used to prune the brand-new record (dWaiters was still empty)
+      // and deadlock every /relay request until timeout.
 
-      // Wait for Agent A's reply
+      // Wait for Agent A's reply; drop immediately if caller times out or disconnects
       const reply = await new Promise((resolve) => {
         let settled = false;
-        const timer = setTimeout(() => {
+        let waiterFn = null;
+        let timer = null;
+
+        const dropWaiter = (reason) => {
+          if (Array.isArray(record.dWaiters) && waiterFn) {
+            const idx = record.dWaiters.indexOf(waiterFn);
+            if (idx >= 0) record.dWaiters.splice(idx, 1);
+          }
+          if (record.status !== 'replied' && (!record.dWaiters || record.dWaiters.length === 0)) {
+            record.status = reason;
+            appendHistory({ event: 'drop_backlog', requestId, reason });
+            requests.delete(requestId);
+          }
+        };
+
+        timer = setTimeout(() => {
           if (settled) return;
           settled = true;
+          dropWaiter('timeout_dropped');
           resolve({
             ok: false,
             timeout: true,
@@ -493,22 +553,38 @@ const server = http.createServer(async (req, res) => {
           });
         }, timeoutMs);
 
-        const waiter = (r) => {
+        waiterFn = (r) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
           resolve(r);
         };
-        record.dWaiters.push(waiter);
+        record.dWaiters.push(waiterFn);
+        // Wake Agent A only once the waiter exists, otherwise pruneStaleBacklog drops this record.
+        notifyAListeners();
 
-        req.on('close', () => {
+        const onDisconnect = () => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
+          dropWaiter('disconnected_dropped');
+          resolve({
+            ok: false,
+            aborted: true,
+            requestId,
+            error: '请求连接已断开，自动丢弃未完成任务。',
+          });
+        };
+
+        req.on('aborted', onDisconnect);
+        res.on('close', () => {
+          if (!res.writableEnded) onDisconnect();
         });
       });
 
-      sendJson(res, 200, reply);
+      if (!res.writableEnded) {
+        sendJson(res, 200, reply);
+      }
       return;
     }
 
