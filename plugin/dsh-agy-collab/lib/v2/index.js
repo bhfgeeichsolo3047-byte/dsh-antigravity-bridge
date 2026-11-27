@@ -3,8 +3,8 @@
  *
  * 规格 §13 第 1–5 步的可跑最小闭环挂载点。
  *
- * 铁律：v1 全量行为是默认路径。只有显式设置 DSH_AGY_COLLAB_V2=1 时本文件才装配任何东西，
- * 关掉这个环境变量后插件行为与 v1 完全一致（不迁移配置、不清 records、不动 broker）。
+ * 铁律：v2 三角色闭环是默认路径。只有显式把 DSH_AGY_COLLAB_V2 设成 0/false/off/no 时本文件
+ * 才完全不装配，此时插件行为退回 v1（不迁移配置、不清 records、不注册 v2 工具）。
  *
  * 本文件只做四件事：
  *   1. 读配置（必要时迁移到 schema v2）
@@ -37,14 +37,23 @@ import {
   renderToolResult,
 } from './tools.js';
 
-/** 打开 v2 的唯一开关。 */
+/** v2 的开关变量名。默认开启，显式关掉才退回 v1。 */
 export const V2_ENV_FLAG = 'DSH_AGY_COLLAB_V2';
+
+/** 显式关闭 v2 的取值（忽略大小写与首尾空白）。其余取值——包括未设置——都算开启。 */
+export const V2_DISABLE_VALUES = Object.freeze(['0', 'false', 'off', 'no']);
 
 /** Host 侧启动任务的工具名（T1）。规格只定义了角色侧四个工具，T1 的触发点是这个。 */
 export const START_TOOL_NAME = 'collab_start';
 
+/**
+ * v2 是否启用。默认 true；只有显式设成 0/false/off/no 才 false。
+ * 这是全插件唯一的开关判据，v1 入口必须 import 本函数，不要自己写字符串比较。
+ */
 export function isV2Enabled(env = process.env) {
-  return String(env?.[V2_ENV_FLAG] ?? '') === '1';
+  const raw = env?.[V2_ENV_FLAG];
+  if (raw === undefined || raw === null) return true;
+  return !V2_DISABLE_VALUES.includes(String(raw).trim().toLowerCase());
 }
 
 /**
@@ -306,8 +315,8 @@ export async function mountV2(ctx, opts = {}) {
             ok: true,
             message: [
               `任务 ${started.taskId} 已进入 running，03 任务清单共 ${requirementIds.length} 条需求；按 02 执行方案的步骤改仓库，改完调 collab_submit_for_review。`,
-              // 双保险：v2 会话不该再去调 v1 的 agy_collab_relay（v1 提示词已被 DSH_AGY_COLLAB_V2 关掉，
-              // 但模型可能从历史上下文里想起旧协议，这里明说一句把它掐掉）。
+              // 双保险：v2 会话不该再去调 v1 的 agy_collab_relay（v2 下那个工具根本不注册、
+              // v1 提示词也不注入，但模型可能从历史上下文里想起旧协议，这里明说一句把它掐掉）。
               '本任务走 v2 进程内工作台闭环，无需调用外部 agy_collab_relay。',
             ].join('\n'),
             data: {

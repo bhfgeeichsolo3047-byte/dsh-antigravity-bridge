@@ -23,28 +23,37 @@ const STALE_REDISPATCH_MS = Number(process.env.DSH_AGY_STALE_MS || 180_000);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-function loadState() {
+/**
+ * 读 state.json 的完整原始对象（含 v2 的 schema_version / roles / workspaceRoot 等键）。
+ * 读失败返回空对象。**任何写盘都必须以它为底合并**，否则会把 v2 配置整文件抹掉。
+ */
+function readRawState() {
   try {
     const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    return {
-      enabled: Boolean(raw.enabled),
-      sessions: raw.sessions && typeof raw.sessions === 'object' ? raw.sessions : {},
-      updatedAt: Number(raw.updatedAt) || Date.now(),
-    };
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
   } catch {
-    return {
-      enabled: false,
-      sessions: {},
-      updatedAt: Date.now(),
-    };
+    // ignore
   }
+  return {};
+}
+
+function loadState() {
+  const raw = readRawState();
+  return {
+    ...raw,
+    enabled: Boolean(raw.enabled),
+    sessions: raw.sessions && typeof raw.sessions === 'object' ? raw.sessions : {},
+    updatedAt: Number(raw.updatedAt) || Date.now(),
+  };
 }
 
 function saveState(state) {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
+    // 写前重新读一次盘上原文件做底：并发写者（Host 侧 lib/index.js）刚落的 v2 键不能被这次覆盖丢掉。
+    const merged = { ...readRawState(), ...state };
     const tmp = `${STATE_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n', 'utf8');
     fs.renameSync(tmp, STATE_FILE);
   } catch {
     // ignore transient write errors

@@ -175,3 +175,40 @@ test('broker: 协作开关关闭时 /relay 直接拒绝，不建 backlog', async
     stopBroker(handle);
   }
 });
+
+test('broker: POST /state 保留 state.json 里的 v2 字段（丢键回归）', async () => {
+  const handle = await startBroker();
+  try {
+    const dataDir = path.join(handle.home, '.dsh', 'agy-collab');
+    const v2Fields = {
+      schema_version: 2,
+      brokerPort: 18765,
+      workspaceRoot: 'C:/tmp/ws',
+      role_binding_mode: 'triple',
+      reviewer_mode: 'strict',
+      rejection_limit: 2,
+      estimate_subagents: false,
+      roles: {
+        planner: { carrier: 'in-process', model: null, actor_id: null },
+        executor: { carrier: 'session', model: null, actor_id: null },
+        reviewer: { carrier: 'in-process', model: null, actor_id: null },
+      },
+    };
+    fs.writeFileSync(
+      path.join(dataDir, 'state.json'),
+      JSON.stringify({ ...v2Fields, enabled: true, sessions: { 'test-session': true }, updatedAt: 1 }, null, 2),
+    );
+
+    const res = await post(handle.port, '/state', { sessionId: 'test-session', enabled: false }, 8000).promise;
+    assert.equal(res.status, 200);
+
+    const after = JSON.parse(fs.readFileSync(path.join(dataDir, 'state.json'), 'utf8'));
+    for (const [k, v] of Object.entries(v2Fields)) {
+      assert.deepEqual(after[k], v, `字段 ${k} 被 broker 抹掉了`);
+    }
+    assert.equal(after.enabled, false);
+    assert.equal(after.sessions['test-session'], false);
+  } finally {
+    stopBroker(handle);
+  }
+});

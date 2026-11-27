@@ -21,6 +21,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { isActorSession } from './actor-sessions.js';
+// v2 的开关判据是全局唯一来源：v1 入口只消费它，不自己写字符串比较。
+// v2/index.js 不反向 import 本文件，静态引入无循环依赖。
+import { isV2Enabled } from './v2/index.js';
 
 export const name = 'dsh-agy-collab';
 export const inject = ['tools', 'systemPrompt'];
@@ -36,25 +39,59 @@ const TOOL_NAME = 'agy_collab_relay';
 const PROMPT_SECTION_NAME = 'xsdshpg-agy-collab';
 const TOOL_TIMEOUT_MS = 540_000;
 
-function readLocalState() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-    return {
-      enabled: Boolean(raw.enabled),
-      sessions: raw.sessions && typeof raw.sessions === 'object' ? raw.sessions : {},
-      updatedAt: Number(raw.updatedAt) || 0,
-    };
-  } catch {
-    return { enabled: false, sessions: {}, updatedAt: 0 };
-  }
+/**
+ * 数据目录解析：显式参数 > env DSH_AGY_COLLAB_DATA_DIR > ~/.dsh/agy-collab。
+ * v2 的 state.json 就在这个目录里，所以读写 state.json 必须认同一套优先级，
+ * 否则测试或逃生口场景会写到用户真实目录上去。
+ */
+function resolveDataDir(opts = {}) {
+  const explicit = opts?.dataDir;
+  if (explicit) return path.resolve(explicit);
+  const fromEnv = process.env.DSH_AGY_COLLAB_DATA_DIR;
+  if (fromEnv) return path.resolve(fromEnv);
+  return DATA_DIR;
 }
 
-function writeLocalState(nextState) {
+function stateFileOf(dataDir) {
+  return path.join(dataDir, 'state.json');
+}
+
+/** 读盘上的完整原始对象（含 v2 的 schema_version / roles / workspaceRoot 等键）。 */
+function readRawLocalState(dataDir) {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    const tmp = `${STATE_FILE}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(nextState, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmp, STATE_FILE);
+    const raw = JSON.parse(fs.readFileSync(stateFileOf(dataDir), 'utf8'));
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+/**
+ * 读 state.json。**保留所有未知键**（v2 字段一律原样带出），只把三个 v1 键归一化。
+ * 只返回三个键会把 v2 配置读丢，进而被下一次写盘整文件抹掉——这是 v2 默认开启后
+ * 最危险的一条路径，故此处与 writeLocalState 一起改。
+ */
+export function readLocalState(opts = {}) {
+  const raw = readRawLocalState(resolveDataDir(opts));
+  return {
+    ...raw,
+    enabled: Boolean(raw.enabled),
+    sessions: raw.sessions && typeof raw.sessions === 'object' ? raw.sessions : {},
+    updatedAt: Number(raw.updatedAt) || 0,
+  };
+}
+
+function writeLocalState(nextState, opts = {}) {
+  const dataDir = resolveDataDir(opts);
+  const file = stateFileOf(dataDir);
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    // 写前重读盘上原文件做底再合并：绝不因为只改一个开关就把 v2 配置整文件覆盖掉。
+    const merged = { ...readRawLocalState(dataDir), ...nextState };
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, file);
   } catch {
     // ignore
   }
@@ -82,26 +119,27 @@ function clearLocalRecords() {
   }
 }
 
-function isCollabEnabled(sessionId) {
-  const st = readLocalState();
+export function isCollabEnabled(sessionId, opts = {}) {
+  const st = readLocalState(opts);
   if (sessionId && Object.prototype.hasOwnProperty.call(st.sessions, sessionId)) {
     return Boolean(st.sessions[sessionId]);
   }
   return Boolean(st.enabled);
 }
 
-function setCollabEnabled(sessionId, enabled) {
-  const st = readLocalState();
-  const next = typeof enabled === 'boolean' ? enabled : !isCollabEnabled(sessionId);
+/**
+ * 翻转/设置协作开关。只写该会话自己的键（v1 曾经把所有 session 键写成同一个值，
+ * 会让「本会话关掉」变成「全部会话关掉」），并在写盘时保留 v2 的全部配置字段。
+ */
+export function setCollabEnabled(sessionId, enabled, opts = {}) {
+  const st = readLocalState(opts);
+  const next = typeof enabled === 'boolean' ? enabled : !isCollabEnabled(sessionId, opts);
   st.enabled = next;
   if (sessionId) {
     st.sessions[sessionId] = next;
   }
-  for (const k of Object.keys(st.sessions)) {
-    st.sessions[k] = next;
-  }
   st.updatedAt = Date.now();
-  writeLocalState(st);
+  writeLocalState(st, opts);
   return next;
 }
 
@@ -245,16 +283,16 @@ function buildCollabPrompt() {
  *   2. 插件自己 ctx.agents.create() 出来的角色没有那个标记
  *      （dsh-subagent/src/child-agent.ts:152），只能查插件自持的 actor 白名单；
  *   3. 会话开关是关的；
- *   4. v2 已启用（DSH_AGY_COLLAB_V2=1）—— v2 是进程内工作台闭环，不需要外部
- *      agy_collab_relay 的三铁律。不排除的话，v2 会话会被注入一段要求它去调
- *      v1 relay 的提示词，模型会真的去调一个当前流程里不存在的工具。
- *      未设这个变量时本函数行为与 v1 完全一致。
+ *   4. v2 已启用（默认启用，只有显式 DSH_AGY_COLLAB_V2=0/false/off/no 才关）——
+ *      v2 是进程内工作台闭环，不需要外部 agy_collab_relay 的三铁律。不排除的话，
+ *      v2 会话会被注入一段要求它去调 v1 relay 的提示词，模型会真的去调一个当前
+ *      流程里不存在的工具。判据统一走 v2 模块导出的 isV2Enabled()。
  */
 export function shouldInjectCollabPrompt(context, deps = {}) {
   const actorCheck = deps.actorCheck ?? isActorSession;
   const enabledCheck = deps.enabledCheck ?? isCollabEnabled;
   const env = deps.env ?? process.env;
-  if (String(env?.DSH_AGY_COLLAB_V2 ?? '') === '1') return false;
+  if (isV2Enabled(env)) return false;
   const origin = context?.agent?.session?.header?.origin;
   if (origin === 'subagent') return false;
   const sid = sessionIdOfContext(context);
@@ -404,14 +442,17 @@ function installWebRoutes(ctx) {
 
 export async function apply(ctx) {
   const disposers = [];
+  // v2 默认开启；只有显式 DSH_AGY_COLLAB_V2=0/false/off/no 才退回 v1 双智能体模式。
+  // 两种模式互斥：同一会话只挂一套协议，避免模型在 v2 流程里误调 v1 relay。
+  const v2On = isV2Enabled(process.env);
   try {
-    // Ensure background broker is running silently
+    // broker 无条件拉起：看板 /records 与 /state 仍由它承载（v2 下它退化为可选传输管道）。
     ensureBrokerProcess().catch(() => {});
 
     // 1. Register conditional systemPrompt section
     disposers.push(registerPromptSection(ctx));
 
-    // 2. Register collaboration relay tool
+    // 2. Register collaboration relay tool（仅 v1 回退模式；v2 默认下不注册）
     const defineTool = await loadDefineTool();
     const toolDef = defineTool({
       name: TOOL_NAME,
@@ -547,20 +588,22 @@ export async function apply(ctx) {
       },
     });
 
-    try {
-      const d = ctx.tools.register(toolDef);
-      if (typeof d === 'function') disposers.push(d);
-    } catch (e) {
-      if (!/already registered/i.test(String(e?.message || e))) throw e;
+    if (!v2On) {
+      try {
+        const d = ctx.tools.register(toolDef);
+        if (typeof d === 'function') disposers.push(d);
+      } catch (e) {
+        if (!/already registered/i.test(String(e?.message || e))) throw e;
+      }
     }
 
     // 3. Install same-origin web routes for the dialog toggle button
     installWebRoutes(ctx);
 
-    // 4. v2 装配（三角色 + 六目录临时工作台）。
-    //    只有显式设置 DSH_AGY_COLLAB_V2=1 时才挂载；不设时插件行为与 v1 完全一致，
-    //    不迁移配置、不动 records.json、不碰 broker。
-    if (String(process.env.DSH_AGY_COLLAB_V2 || '') === '1') {
+    // 4. v2 装配（三角色 + 六目录临时工作台）。默认路径。
+    //    只有显式 DSH_AGY_COLLAB_V2=0/false/off/no 才跳过；跳过时插件行为退回 v1
+    //    双智能体模式（注册 agy_collab_relay + 注入三铁律提示词）。
+    if (v2On) {
       try {
         const { mountV2 } = await import('./v2/index.js');
         const dispose = await mountV2(ctx, {

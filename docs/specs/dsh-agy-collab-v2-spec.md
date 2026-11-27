@@ -729,7 +729,7 @@ const LEGACY_V1_PATHS = [
 
 ### 13.1 第 1–5 步的实现状态
 
-第 1–5 步已实现，落在 `plugin/dsh-agy-collab/lib/v2/`，由 `DSH_AGY_COLLAB_V2=1` 门控；不设该变量时插件行为与 v1 完全一致。
+第 1–5 步已实现，落在 `plugin/dsh-agy-collab/lib/v2/`，**默认启用**：插件启动即装配三角色闭环。要退回 v1 双智能体行为，把 `DSH_AGY_COLLAB_V2` 显式设成 `0` / `false` / `off` / `no`（忽略大小写与首尾空白）；此时不注册 `agy_collab_relay`、不注入 v1 三铁律提示词、不迁移配置。开关判据的全局唯一来源是 `lib/v2/index.js` 导出的 `isV2Enabled(env)`。
 
 | 文件 | 承担 |
 | --- | --- |
@@ -740,7 +740,7 @@ const LEGACY_V1_PATHS = [
 | `lib/v2/roles.js` | 进程内角色载体（`ctx.agents.create` + `tools.restrict`）、角色提示词、actor sessionId 生成 |
 | `lib/v2/tools.js` | `collab_write` 四条校验、Executor 三个触发点、工具定义装配 |
 | `lib/v2/orchestrator.js` | 薄编排：任务开立、事件落盘、规划 / 审核 / 返工三个阶段的重试环、快照越权 |
-| `lib/v2/index.js` | 装配层：门控、按会话隔离的编排器、`collab_start` 与 Executor 三件的闭环 |
+| `lib/v2/index.js` | 装配层：开关判据 `isV2Enabled`、按会话隔离的编排器、`collab_start` 与 Executor 三件的闭环 |
 | `lib/actor-sessions.js` | 插件自建实例的 sessionId 白名单，替代 `origin === 'subagent'` 判据（§6.9） |
 
 实现期与本表原文的三处偏离，都是被实测逼出来的：
@@ -749,7 +749,11 @@ const LEGACY_V1_PATHS = [
 2. **任务 `state.json` 的豁免改成哈希核验**（§6.4 已同步改）。按文件名无条件豁免会让角色伪造 `done` 完全失明。
 3. **`runReview` / `runDrafting` 带原地重试环**。§9.3 第 5 步的「原地重写同一文件」若只写一句提示词、不在编排层真的重试，协议违规就永远收敛不到 `escalated`。
 
-测试：`npm test` 跑 `test/v2/*.test.mjs`，覆盖配置迁移、Workspace 清扫、产物校验、状态机、角色隔离、编排闭环、越权三道判据（篡改 / 删除任务 `state.json`、改目标仓库）。
+第 4 处偏离出现在「v2 转默认」这次改动里，属于同一类被实测逼出来的问题：
+
+4. **v1 与 broker 两处读写 `state.json` 都必须以盘上原始对象为底合并。** `lib/index.js` 的 `readLocalState` 原先只返回 `{ enabled, sessions, updatedAt }` 三个键、`writeLocalState` 直接整文件覆盖，`broker/broker.mjs` 的 `loadState` / `saveState` 是同一个写法。v2 一旦成为默认路径，用户在 UI 点一下协作开关就会把 `schema_version` / `roles` / `workspaceRoot` / `rejection_limit` 全部抹掉。现在两处都改成「读原始对象 → 合并本次改动的键 → 原子落盘」，并各有一条丢键回归测试（`test/v2/state-merge.test.mjs`、`test/broker/dispatch.test.mjs` 的 `POST /state` 用例）。顺带修掉 v1 的 `setCollabEnabled` 把 `sessions` 里所有键写成同一个值的缺陷——只写本会话自己的键。
+
+测试：`npm test` 跑 `test/v2/*.test.mjs` 与 `test/broker/*.test.mjs`，覆盖配置迁移、Workspace 清扫、产物校验、状态机、角色隔离、编排闭环、越权三道判据（篡改 / 删除任务 `state.json`、改目标仓库）、开关默认值、`state.json` 丢键回归、broker 派发死锁回归。
 
 ---
 

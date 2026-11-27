@@ -47,21 +47,37 @@ function makeCtx() {
   return { ctx, record, scoped };
 }
 
-test('DSH_AGY_COLLAB_V2 未设或不是 1 时完全不装配', async () => {
-  assert.equal(isV2Enabled({}), false);
-  assert.equal(isV2Enabled({ DSH_AGY_COLLAB_V2: '0' }), false);
-  assert.equal(isV2Enabled({ DSH_AGY_COLLAB_V2: 'true' }), false);
+test('v2 默认启用：未设 DSH_AGY_COLLAB_V2 也算开启', async () => {
+  assert.equal(isV2Enabled({}), true);
   assert.equal(isV2Enabled({ DSH_AGY_COLLAB_V2: '1' }), true);
+  assert.equal(isV2Enabled({ DSH_AGY_COLLAB_V2: 'true' }), true);
+  assert.equal(isV2Enabled({ DSH_AGY_COLLAB_V2: 'yes' }), true);
+  assert.equal(isV2Enabled({ DSH_AGY_COLLAB_V2: '' }), true);
 
   const dataDir = tmpDir();
   const { ctx, record } = makeCtx();
-  const dispose = await mountV2(ctx, { env: {}, dataDir });
-  assert.equal(dispose, null, 'v2 关着时必须返回 null');
-  assert.equal(record.injected.length, 0, '不许 inject 任何服务');
-  assert.equal(record.registered.length, 0, '不许注册任何工具');
-  // 连配置目录都不该被建出来
-  assert.equal(fs.existsSync(path.join(dataDir, 'state.json')), false);
+  const dispose = await mountV2(ctx, { env: {}, dataDir, log: () => {} });
+  assert.equal(typeof dispose, 'function', '默认必须装配');
+  assert.deepEqual(record.injected, [['agents', 'tools']]);
+  assert.ok(fs.existsSync(path.join(dataDir, 'state.json')));
+  dispose();
   fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('显式 DSH_AGY_COLLAB_V2=0/false/off/no 时完全不装配（v1 回退开关）', async () => {
+  for (const value of ['0', 'false', 'off', 'no', 'FALSE', ' 0 ']) {
+    assert.equal(isV2Enabled({ DSH_AGY_COLLAB_V2: value }), false, `${JSON.stringify(value)} 应关闭 v2`);
+
+    const dataDir = tmpDir();
+    const { ctx, record } = makeCtx();
+    const dispose = await mountV2(ctx, { env: { DSH_AGY_COLLAB_V2: value }, dataDir });
+    assert.equal(dispose, null, 'v2 关着时必须返回 null');
+    assert.equal(record.injected.length, 0, '不许 inject 任何服务');
+    assert.equal(record.registered.length, 0, '不许注册任何工具');
+    // 连配置目录都不该被建出来
+    assert.equal(fs.existsSync(path.join(dataDir, 'state.json')), false);
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
 });
 
 test('v2 打开时注入 agents+tools，注册 collab_start 与 Executor 三件', async () => {
