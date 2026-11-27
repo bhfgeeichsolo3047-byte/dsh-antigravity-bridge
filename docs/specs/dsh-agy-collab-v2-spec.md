@@ -813,6 +813,103 @@ manifest 落 `~/.gemini/config/.dsh-collab-manifest.json`，`{ schemaVersion: 1,
 
 ---
 
+### 13.4 第 8 步的实现状态（设置页）
+
+第 8 步交付的是右侧看板的第二分页「设置与运行台」。承载位置照 §12.1 定死：**不开新的全局设置页**，因为四个全局挂载点（`settings.section` / `settings.plugins.tab` / `plugins.item` / `main`）的 standardProps 全都没有 `sessionId`（`slot-catalog.ts:2669` / `:3805`），而协作开关是按会话的。
+
+#### Host 侧：`plugin/dsh-agy-collab/lib/v2/settings.js`（新文件）
+
+设置页的服务层。客户端只发意图，所有校验与落盘都在这里，客户端拿不到写盘通道。
+
+| 导出 | 职责 |
+| --- | --- |
+| `PATCHABLE_KEYS` | 九个可改项：`enabled` / `globalEnabled` / `role_binding_mode` / `reviewer_mode` / `rejection_limit` / `estimate_subagents` / `workspaceRoot` / `brokerPort` / `roles`。不在表里的键一律拒收 |
+| `applyConfigPatch({config, patch, dataDir, sessionId, stage})` | 白名单校验 → 逐项调 `config.js` 的 setter（`setCollabEnabled` / `setRoleBindingMode` / `setReviewerMode` / `setEstimateSubagents` / `setRejectionLimit` / `setWorkspaceRoot` / `setBrokerPort` / `setRoleBinding`）→ 末尾统一 `validateRoleBindings`。返回 `{ok, config}` 或 `{ok:false, error}`，**不落盘** |
+| `persistConfig(dataDir, config)` | `writeConfigFile` 落盘，返回归一化后的新 config |
+| `buildSettingsSnapshot({config, sessionId, runtime, broker, env})` | 拼客户端要的全部只读快照：`config` / `enabled` / `validation` / `roles`（三角色的读写边界说明）/ `enums`（四个枚举与驳回上限的 min-max）/ `templates` / `broker` / `runtime` |
+| `inspectInstalledTemplates({geminiConfigDir})` | A 侧模板三态：`not_installed` / `installed` / `drifted`，每项 `{name, relPath, path, state, templateVersion, sha256}` |
+| `resolveGeminiConfigDir(env)` | env `GEMINI_CONFIG_DIR` > `~/.gemini/config` |
+
+两条强约束写死在 `applyConfigPatch` 里，对应 §12.6 的粒度裂缝：
+
+1. `enabled` 必须带 `sessionId`，不带直接报错「协作开关是按会话的，必须带 sessionId」。**不允许**从设置页写全局 `enabled` —— 那会顺手改掉别的会话。
+2. `rejection_limit` 必须带 `stage`，`stage !== 'drafting'` 时拒绝（`setRejectionLimit` 原有的规则），并把当前阶段名写进错误文案。
+
+#### Host 侧：两条新路由
+
+`plugin/dsh-agy-collab/lib/index.js` 的 `/api/agy-collab` 下新增（照旧过 `allowSameOrigin`）：
+
+- `GET|HEAD /config?sessionId=`：`readConfigFile(dataDir)` → `buildSettingsSnapshot` → `{ok:true, ...snapshot}`。
+- `POST /config`：body `{sessionId, patch, stage?}` → `applyConfigPatch` → 失败 `400 {ok:false, error}`；成功 `persistConfig` → `v2ReplaceConfig(saved)` → 回同一份 `GET` 形状。**错误文案原样回给客户端**，客户端不改写成友好话术。
+
+`stage` 缺省时由 Host 从运行台快照现算（`v2TaskStage(sessionId)`），所以客户端不需要知道阶段。
+
+#### 配置从「快照」改成「活引用」
+
+改之前 `mountV2` 里 `config` 是常量，`orchestrator` 里 `root = resolveWorkspaceRoot(config, ...)` 也是常量 —— 设置页改完盘，进程内读到的还是旧值。第 8 步把两处都改成惰性：
+
+- `v2/index.js`：`let currentConfig = config` + `currentConfigFn()` + `replaceConfig(next)`，`createOrchestrator` 改传 `getConfig: currentConfigFn`。
+- `orchestrator.js`：新增 `currentConfig()` 与 `currentRoot()`，把 11 处 `config.xxx` 与全部 `root` 用法改成现算；返回对象的 `root` 改成 getter，并新增 `config` getter。
+- `mountV2` 返回的 dispose 函数上挂三个属性：`getRuntimeSnapshot(sessionId)` / `replaceConfig` / `getConfig`。**返回值仍是 function**，所以 13 处测试里的 `dispose()` 调用一行不用改。
+
+`getRuntimeSnapshot` 是只读的：会话没有编排器就回 `{active:false}`，**不新建** —— 打开设置页不该顺手把工作台建起来。
+
+#### 运行台快照多了一个 `files[]`
+
+`orchestrator.snapshot()` 原来只有任务字段与六个目录名。第 8 步补 `files`：每项 `{slot, dir, fileName, exists, semantic}`。
+
+- `fileName` 走 `roundFileName`：`review` 取 `review-r{round}.md`，`revision` 取 `revision-r{round-1}.md`（第 N 轮返工读的是上一轮写的 05）。
+- `semantic` 六值：不可变 / 可覆盖 / 已冻结 / 只增不改 / 只增不改 / 终审。
+- `exists` 现算 `fs.existsSync`，不做缓存。
+
+无任务分支仍是 `{active:false}`，所以 `test/v2/orchestrator.test.mjs` 里那条 `deepEqual` 不受影响。
+
+#### 客户端：`KanbanDrawer` 的第二分页
+
+`client.js` 从 1741 行涨到 3011 行。头部之下插 `nav.dsh-agy-kb-tabs`（「任务看板」/「设置与运行台」），主体按 `tab` 分三元。设置页渲染顺序：
+
+1. **置顶常驻状态条**：任务 id（460px 下隐藏）+ 当前状态 + `驳回 N/M` + 「在等谁」。与 C 卡重复表达同一状态是刻意的，但两处都从 `runtime` 读，不读文件 mtime。
+2. **A 卡角色绑定**：三个 `<details>` 折叠行（静息一行摘要，点开才展开三个字段）。载体 select 对 executor 永久 disabled；模型与 Actor 走 `onBlur` 提交，避免每次按键都写盘。每行底部一条绿框写 `read / write / note`，内容来自 `settings.js` 的 `ROLE_META`（照 §6.2 能力边界表抄，不在这里二次创作）。
+3. **B 卡协作与工作台**：协作总开关 / 角色绑定模式 / 预估子 agent 数量 / 审核档位 / 驳回上限步进器 / 临时工作台根路径 / 总线端口，加四条只读绿框（实际层级 §3.2、下次启动清扫 §3.3、A 侧模板三态 §11.5、总线四态 §12.4）。
+4. **分界线**「以上为配置 · 以下为现状」。
+5. **C 卡当前任务**：六格真实文件名 + 语义标签 + 有/未生成，底部黄框写「在等谁」。
+6. **D 卡角色实例**：actor session id / 03 需求 id / 工作台根。**没有「角色最近动作」** —— 那需要读文件 mtime，而 §12.3 的原始设想在这里没有可靠数据源，宁可少一行也不编。
+7. **E 卡工作台文件**：六行 `dir/fileName` + 语义 + 有/—，无任务时用 `review-r<N>.md` 这类占位。
+
+样式全部走 `COLLAB_CSS` 里新增的一组类（`.dsh-agy-kb-tabs` / `-set-card` / `-set-row` / `.dsh-agy-sw` / `.dsh-agy-seg` / `.dsh-agy-stepper` / `.dsh-agy-role-row` / `.dsh-agy-settled` / `.dsh-agy-pinbar` / `.dsh-agy-divider` / `.dsh-agy-grid6` / `.dsh-agy-files`），每个类都有 `body[data-ds-dark-theme]` 覆盖。
+
+#### 旧词表在 UI 侧的最后一次清理（§9.2）
+
+`client.js` 里还剩四处旧协议痕迹，第 8 步一起删掉：
+
+| 位置 | 改前 | 改后 |
+| --- | --- | --- |
+| `computeFlowSteps` | 按 `phase === 'plan' \| 'consult' \| 'review'` 分支，`verdict === 'APPROVED'` 判通过 | 按 `roleOf(rec)`（planner / reviewer）分支，`verdictOf(rec)` 归一成 `pending \| pass \| needs_revision` |
+| `nodeMeta` 六步 | STEP2「phase: plan 转达」、STEP4「遇疑向 A 协商」、STEP5「phase: review 送审」 | 「D → 规划 agent」「D 按 03 清单执行」「D → 审核 agent：读 03 + 仓库产物」 |
+| 筛选 tab | `all / plan / consult / review` 四档 | `all / planner / reviewer` 三档 |
+| 卡片 verdict | 五档 `waiting / approved / plan_ready / consult_answered / changes`，文案含 `APPROVED` / `PLAN_READY` / `CONSULT_ANSWERED` / `CHANGES_REQUESTED` | 三档 `waiting / approved / changes`，文案是「等规划 agent 交付」「等审核 agent 判定」「pass（需求已达成）」「needs_revision（需修改）」 |
+
+`roleOf` 与 `verdictOf` 各留一条旧记录兼容分支（`rec.role` 缺失时按 `rec.phase === 'review'` 推断角色），因为看板读的是 broker 的 `/records`，里面还躺着迁移前的历史记录。**兼容只在这一层**，上游一律只写 `role`。
+
+#### 测试
+
+`test/v2/settings.test.mjs`（27 个用例）：
+
+- `applyConfigPatch`：白名单拒收、空 patch 拒收、九项键齐全、`enabled` 无 sessionId 拒收、带 sid 只写 `sessions[sid]` 不动全局、驳回上限非 drafting 拒改且文案带阶段名、超范围报 1-5、triple 同 actor 两槽报错、dual 放行、executor 载体强制 session、非法 `reviewer_mode` / `role_binding_mode` / `brokerPort` 全部拒收、`workspaceRoot` 空串回落默认。
+- `inspectInstalledTemplates`：全缺 → `not_installed`；两份 in_sync → `installed` 且带 `template_version`；改一份 → `drifted` 且另一份仍 in_sync；v1 legacy 还在 → `drifted` + `legacyPresent`；manifest `schemaVersion=99` → `unrecognized`。
+- `persistConfig`：落盘回读一致、未知键原位保留。
+- `buildSettingsSnapshot`：形状、`roles` 三键、`enums` 四组、无 runtime 回 `{active:false}`、会话无显式键回落全局 `enabled`。
+
+`npm test` 总数 210 → **237**，全过。
+
+#### 实现期偏离三处
+
+1. **`settings.js` 的 `inspectInstalledTemplates` 没有 `outdated` 态**。`scripts/template-sync.mjs` 里有（它拿得到仓库里的模板源），但插件运行时被单独复制到 `~/.dsh/agy-collab/`，拿不到 `antigravity/rules/dsh-collab/`，只能比对「磁盘 vs manifest 记录」。所以设置页只能区分「一致 / 被人改过」，分不出「是上一版」。真正的版本判定留在 `install.mjs` 的装后自检里。
+2. **D 卡从「角色最近动作四行」缩成「角色实例三行」**。§12.3 原设想按 Workspace mtime 推最近动作，但那要求每个角色都往六目录写东西，而 §6.2 明确 Executor 不写六目录、Reviewer 只写 04/06。硬凑会造出假数据，所以只显示真实存在的三个字段。
+3. **`.dsh-agy-grid6` 在 460px 抽屉里是 3 列 × 2 行，不是 6 列一行**。原型里的 6 列是 760px 宽屏态；抽屉默认宽 460px，6 列会把文件名压到不可读。
+
+---
+
 ## 14. 三条贯穿全篇的硬前提
 
 1. **任务 `state.json` 必须先于角色调用落地。** 任何角色被调用时，任务 `state.json` 里的 `round` / `rejection_count` 必须已经是本轮的值。先调角色再写状态，会让角色读到上一轮的轮次。

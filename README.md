@@ -22,14 +22,14 @@ DSH_AGY_COLLAB_V2=0     # 也可写 false / off / no
 | 角色间传什么 | 四段式散文回执 | 工作台里的结构化文件 |
 | 谁记状态 | `records.json`（broker 侧） | `state.json`（Host 独占写） |
 | broker | 必需 | 可选，只在有角色绑到进程外时才需要 |
-| 设置页 | 无 | 右侧看板第二分页「设置与运行台」（原型已交付） |
+| 设置页 | 无 | 右侧看板第二分页「设置与运行台」 |
 | 触发方式 | `agy_collab_relay(phase=...)` | `collab_start` + 四个角色侧工具 |
 
 两种模式互斥：v2 开启时不注册 `agy_collab_relay`，也不注入 v1 的三铁律提示词，避免同一会话出现两套协议诱发误调。
 
 > **从 v1 升级过来的人请注意**：以前靠 `DSH_AGY_COLLAB_V2=1` 才启用的三角色闭环，现在是默认路径；原来一直在跑的 A↔D `agy_collab_relay` 通道变成了需要显式设置 `DSH_AGY_COLLAB_V2=0` 才恢复的回退模式。
 
-**v2 的完整规格在 [`docs/specs/dsh-agy-collab-v2-spec.md`](./docs/specs/dsh-agy-collab-v2-spec.md)**，汇总了八张设计票的全部结论，是实现工作的唯一依据。设置页的可交互原型在 [`docs/prototypes/collab-settings.html`](./docs/prototypes/collab-settings.html)，用浏览器直接打开即可。
+**v2 的完整规格在 [`docs/specs/dsh-agy-collab-v2-spec.md`](./docs/specs/dsh-agy-collab-v2-spec.md)**，汇总了八张设计票的全部结论，是实现工作的唯一依据。设置页已按 §12 实装进看板第二分页；设计期的可交互原型仍留在 [`docs/prototypes/collab-settings.html`](./docs/prototypes/collab-settings.html)，用浏览器直接打开即可对照。
 
 ---
 
@@ -53,6 +53,12 @@ DSH_AGY_COLLAB_V2=0     # 也可写 false / off / no
 4. **角色绑定双模式**
    - `triple`（默认）：Planner / Executor / Reviewer 必须是三个不同 actor。
    - `dual`：Planner 与 Reviewer 可绑同一个 actor，但进入审核阶段必须冷启动新会话，否则审核会带着规划记忆自查自批。
+
+5. **右侧看板的第二分页「设置与运行台」**
+   - 一个抽屉里两页：**任务看板**（流程图 + 往返记录）与**设置与运行台**（上半配置、下半现状，中间一条「以上为配置 · 以下为现状」）。
+   - 配置九项：协作开关（按会话）、角色绑定模式、预估子 agent 数量、审核档位、驳回上限、工作台根路径、总线端口、三个角色的载体/模型/Actor。
+   - 现状四块：置顶常驻状态条（任务 id / 状态 / 驳回 N/M / 在等谁）、当前任务六格真实文件名、角色实例、工作台文件表。
+   - **现状区只读，不给编辑框**：越权判定靠 Workspace 全树快照 diff，人从 UI 写进六目录的内容与角色越权在快照里长得一样，会判废误伤。要留档请用「导出/复制」。
 
 ---
 
@@ -109,10 +115,10 @@ dsh-antigravity-bridge/
 │       ├── lib/
 │       │   ├── index.js            # Host 端入口：v2 装配开关、v1 回退工具、Web 路由
 │       │   ├── actor-sessions.js   # 插件自建角色的会话白名单（宿主没有 origin=subagent 标记）
-│       │   └── v2/                 # v2 三角色闭环：config / workspace / artifacts / state-machine / roles / tools / orchestrator / index
-│       └── client.js               # Client 端：外置控制条与右侧任务看板 UI
+│       │   └── v2/                 # v2 三角色闭环：config / workspace / artifacts / state-machine / roles / tools / orchestrator / settings / index
+│       └── client.js               # Client 端：外置控制条 + 右侧看板（任务看板 / 设置与运行台两页）
 ├── test/
-│   ├── v2/                         # v2 单元与端到端测试（13 个文件）
+│   ├── v2/                         # v2 单元与端到端测试（14 个文件）
 │   └── broker/                     # 本地总线：派发、作废、断连回收、端口归属、模板同步、role 协议
 ├── antigravity/
 │   └── rules/
@@ -215,6 +221,20 @@ broker 在 v2 默认路径下退化为**可选传输管道**（只有角色绑�
 | `/listen` | `GET` | A 长轮询获取单个或微批聚合请求（默认 `batchWindowMs=250`） |
 | `/reply` | `POST` | A 回传「本轮结束」信号；`content` 可选、`verdict` 不猜，结论以 Workspace 文件为准 |
 | `/history` | `GET` | 获取最近事件流水（最多 6 条） |
+
+### 插件侧 Web 路由（`/api/agy-collab`）
+
+看板与设置页只打这两组路由，端口由 Host 现算（`DSH_AGY_COLLAB_PORT` > `state.json.brokerPort` > 18765），客户端不再硬编码。
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/agy-collab/state` | `GET` / `POST` | 会话/全局协作开关与总线四态；响应带 `brokerPort` / `brokerState` / `brokerMessage` / `brokerPid` |
+| `/api/agy-collab/records` | `GET` | 转发 broker 的记录（迁移期兼容旧 `phase` 字段） |
+| `/api/agy-collab/clear` | `POST` | 清空记录 |
+| `/api/agy-collab/config` | `GET` | 设置页与运行台的只读快照：`config` / `validation` / `roles` / `enums` / `templates` / `broker` / `runtime` |
+| `/api/agy-collab/config` | `POST` | body `{sessionId, patch, stage?}`；白名单九项，Host 侧校验后落盘，失败原样回错误文案 |
+
+`POST /config` 的两条硬规则：`enabled` 必须带 `sessionId`（协作开关按会话，不许从设置页改全局）；`rejection_limit` 只在 `drafting` 阶段可改。
 
 ---
 

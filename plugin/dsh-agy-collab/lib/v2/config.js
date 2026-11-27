@@ -306,6 +306,51 @@ export function setRejectionLimit(config, limit, { stage, now = Date.now() } = {
   return { ok: true, config: next };
 }
 
+/** 改审核档位（strict | loose）。 */
+export function setReviewerMode(config, mode, { now = Date.now() } = {}) {
+  if (!REVIEWER_MODES.includes(mode)) throw new Error(`unknown reviewer_mode "${mode}"`);
+  const next = normalizeConfig(config, { now });
+  next.reviewer_mode = mode;
+  next.updatedAt = Number(now) || Date.now();
+  return next;
+}
+
+/** 预估子 agent 数量开关（Planner 是否要在 plan.steps[].subagent_count 里给数）。 */
+export function setEstimateSubagents(config, enabled, { now = Date.now() } = {}) {
+  const next = normalizeConfig(config, { now });
+  next.estimate_subagents = Boolean(enabled);
+  next.updatedAt = Number(now) || Date.now();
+  return next;
+}
+
+/** 改临时工作台根路径。空串回落到默认（dataDir/workspace）。 */
+export function setWorkspaceRoot(config, workspaceRoot, { now = Date.now(), dataDir = null } = {}) {
+  const next = normalizeConfig(config, { now });
+  const raw = typeof workspaceRoot === 'string' ? workspaceRoot.trim() : '';
+  if (!raw) {
+    next.workspaceRoot = dataDir
+      ? path.join(dataDir, 'workspace')
+      : path.join(os.homedir(), '.dsh', 'agy-collab', 'workspace');
+  } else {
+    if (/[\0]/.test(raw)) throw new Error('workspaceRoot 不能包含空字符');
+    next.workspaceRoot = raw;
+  }
+  next.updatedAt = Number(now) || Date.now();
+  return next;
+}
+
+/** 改总线端口（§10.6：env 仍然优先于配置）。 */
+export function setBrokerPort(config, port, { now = Date.now() } = {}) {
+  const n = Number(port);
+  if (!Number.isInteger(n) || n <= 0 || n > 65535) {
+    throw new Error(`brokerPort 必须是 1-65535 的整数，收到 ${port}`);
+  }
+  const next = normalizeConfig(config, { now });
+  next.brokerPort = n;
+  next.updatedAt = Number(now) || Date.now();
+  return next;
+}
+
 /**
  * 校验角色绑定是否自洽。
  * triple 模式：同一 actor 出现在两槽 → 拒启（§7.1）。

@@ -164,7 +164,15 @@ export async function mountV2(ctx, opts = {}) {
   const { config, migrated, created, backupPath } = migrateConfigIfNeeded({ dataDir });
   if (created) log(`[v2] 首次初始化 schema v2 配置：${path.join(dataDir, 'state.json')}`);
   else if (migrated) log(`[v2] 配置已迁移到 schema v2，旧文件备份在 ${backupPath}`);
-  const brokerPort = resolveBrokerPort(config, env);
+  // 配置在进程内是可变引用：设置页改盘后要立刻生效，不能让编排器继续读挂载时那份快照。
+  // 所有读取方一律走 currentConfig()，不要直接引用 config。
+  let currentConfig = config;
+  const currentConfigFn = () => currentConfig;
+  const replaceConfig = (next) => {
+    if (next && typeof next === 'object') currentConfig = next;
+    return currentConfig;
+  };
+  const brokerPort = resolveBrokerPort(currentConfig, env);
   log(`[v2] 装配开始 dataDir=${dataDir} brokerPort=${brokerPort}`);
 
   const defineTool = await loadDefineTool();
@@ -219,7 +227,9 @@ export async function mountV2(ctx, opts = {}) {
       if (orch) return orch;
       orch = createOrchestrator({
         dataDir,
-        config,
+        // 传 getter 而不是快照：设置页改 workspaceRoot / 驳回上限 / 审核档位之后，
+        // 已建好的编排器下一次读取就要看到新值（否则改了不生效）。
+        getConfig: currentConfigFn,
         agents,
         defineTool,
         createUserMessage,
@@ -493,6 +503,28 @@ export async function mountV2(ctx, opts = {}) {
   if (typeof ctx?.effect === 'function') {
     ctx.effect(() => disposeAll, 'dsh-agy-collab-v2: cleanup');
   }
+
+  // 设置页（§12）要读的两样东西挂在 dispose 函数上：
+  // 保持返回值仍是 function，现有 13 处 dispose() 调用不用改。
+  /**
+   * 当前会话的运行台快照。**只读，不新建编排器** —— 打开设置页不该顺手把工作台建起来。
+   */
+  disposeAll.getRuntimeSnapshot = (sessionId) => {
+    const key = String(sessionId ?? '').trim();
+    if (!key) return { active: false };
+    const orch = orchestrators.get(key);
+    if (!orch) return { active: false };
+    try {
+      return orch.snapshot();
+    } catch (error) {
+      log(`[v2] 读取运行台快照失败：${error?.message ?? error}`);
+      return { active: false };
+    }
+  };
+  /** 设置页落盘之后把新配置灌回进程内引用，让已建好的编排器下一次读取就看到新值。 */
+  disposeAll.replaceConfig = replaceConfig;
+  disposeAll.getConfig = currentConfigFn;
+  disposeAll.dataDir = dataDir;
 
   return disposeAll;
 }

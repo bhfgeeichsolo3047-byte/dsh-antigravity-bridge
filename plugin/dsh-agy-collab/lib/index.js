@@ -31,6 +31,12 @@ import {
 } from './broker-client.js';
 // 端口优先级与「哪些角色在进程外」的唯一实现都在 v2/config.js，这里复用而不是再写一份。
 import { externalRoles, readConfigFile, resolveBrokerPort } from './v2/config.js';
+// 设置页的服务层：patch 校验、落盘、运行台快照拼装都在 v2/settings.js（规格 §12）。
+import {
+  applyConfigPatch,
+  buildSettingsSnapshot,
+  persistConfig,
+} from './v2/settings.js';
 // v2 的开关判据是全局唯一来源：v1 入口只消费它，不自己写字符串比较。
 // v2/index.js 不反向 import 本文件，静态引入无循环依赖。
 import { isV2Enabled } from './v2/index.js';
@@ -162,6 +168,31 @@ function currentBrokerPort() {
   } catch {
     return DEFAULT_BROKER_PORT;
   }
+}
+
+/**
+ * v2 装配层留给设置页的两个句柄（§12）。
+ *   getRuntimeSnapshot(sessionId)  当前会话的运行台快照（编排器只读快照，不建实例）
+ *   replaceConfig(next)            设置页落盘之后把新配置灌回进程内引用
+ * v2 关掉（v1 回退模式）时两者都是 null，此时设置页只显示配置、运行台显示「v2 未启用」。
+ */
+let v2GetRuntimeSnapshot = null;
+let v2ReplaceConfig = null;
+
+function v2RuntimeSnapshot(sessionId) {
+  if (typeof v2GetRuntimeSnapshot !== 'function') return { active: false, v2Enabled: false };
+  try {
+    const snap = v2GetRuntimeSnapshot(sessionId);
+    return snap && typeof snap === 'object' ? { v2Enabled: true, ...snap } : { active: false, v2Enabled: true };
+  } catch {
+    return { active: false, v2Enabled: true };
+  }
+}
+
+/** 当前会话任务的阶段（驳回上限只能在 drafting 改，所以要把阶段传给 setRejectionLimit）。 */
+function v2TaskStage(sessionId) {
+  const snap = v2RuntimeSnapshot(sessionId);
+  return snap?.active ? String(snap.state ?? '') : '';
 }
 
 /**
@@ -510,6 +541,62 @@ function installWebRoutes(ctx) {
                 return;
               }
 
+              // 设置页（§12）：GET 回配置 + 运行台快照，POST 收 patch 并落盘。
+              // 客户端不发「最终配置」，只发要改哪几项 —— 落盘前的一切校验都在 Host 侧。
+              if (sub === '/config' && (req.method === 'GET' || req.method === 'HEAD')) {
+                const runtime = await ensureBrokerProcess();
+                const snapshot = buildSettingsSnapshot({
+                  config: readConfigFile(resolveDataDir()),
+                  sessionId,
+                  runtime: v2RuntimeSnapshot(sessionId),
+                  broker: {
+                    state: runtime?.state ?? null,
+                    port: Number(runtime?.port) || currentBrokerPort(),
+                    pid: runtime?.pid ?? null,
+                    message: isBrokerOnline() ? null : brokerOfflineMessage(),
+                  },
+                });
+                send(200, { ok: true, ...snapshot });
+                return;
+              }
+
+              if (sub === '/config' && req.method === 'POST') {
+                const chunks = [];
+                for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+                const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+                const sid = typeof body.sessionId === 'string' ? body.sessionId.trim() : sessionId;
+                const dataDir = resolveDataDir();
+                const stage = typeof body.stage === 'string' ? body.stage : v2TaskStage(sid);
+                const applied = applyConfigPatch({
+                  config: readConfigFile(dataDir),
+                  patch: body.patch,
+                  dataDir,
+                  sessionId: sid,
+                  stage,
+                });
+                if (!applied.ok) {
+                  send(400, { ok: false, error: applied.error });
+                  return;
+                }
+                const saved = persistConfig(dataDir, applied.config);
+                // 落盘之后立刻灌回进程内引用，已建好的编排器下一次读取就看到新值。
+                v2ReplaceConfig?.(saved);
+                const runtime = await ensureBrokerProcess();
+                const snapshot = buildSettingsSnapshot({
+                  config: saved,
+                  sessionId: sid,
+                  runtime: v2RuntimeSnapshot(sid),
+                  broker: {
+                    state: runtime?.state ?? null,
+                    port: Number(runtime?.port) || currentBrokerPort(),
+                    pid: runtime?.pid ?? null,
+                    message: isBrokerOnline() ? null : brokerOfflineMessage(),
+                  },
+                });
+                send(200, { ok: true, ...snapshot });
+                return;
+              }
+
               if (sub === '/clear' && req.method === 'POST') {
                 await ensureBrokerProcess();
                 clearLocalRecords();
@@ -728,7 +815,16 @@ export async function apply(ctx) {
             }
           },
         });
-        if (typeof dispose === 'function') disposers.push(dispose);
+        if (typeof dispose === 'function') {
+          disposers.push(dispose);
+          // 设置页的读取口与配置回灌口（§12）：dispose 函数上挂着 v2 装配层的只读视图。
+          if (typeof dispose.getRuntimeSnapshot === 'function') {
+            v2GetRuntimeSnapshot = dispose.getRuntimeSnapshot;
+          }
+          if (typeof dispose.replaceConfig === 'function') {
+            v2ReplaceConfig = dispose.replaceConfig;
+          }
+        }
       } catch (error) {
         try {
           ctx?.logger?.warn?.(`[dsh-agy-collab] v2 装配失败：${error?.message ?? error}`);

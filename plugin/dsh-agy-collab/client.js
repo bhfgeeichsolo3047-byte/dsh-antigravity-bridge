@@ -26,6 +26,8 @@ window.__ModuleLoader__.load({
 
     const HOST_STATE_API = '/api/agy-collab/state';
     const HOST_CLEAR_API = '/api/agy-collab/clear';
+    // 设置页（§12）：GET 拿配置 + 运行台快照，POST 只发「要改哪几项」。
+    const HOST_CONFIG_API = '/api/agy-collab/config';
     // 直连 broker 的兜底通道：端口不再硬编码（§10.6）。Host 侧 /state 响应会下发
     // brokerPort（env > state.json.brokerPort > 18765），这里只保留一个初始猜测。
     const DEFAULT_BROKER_PORT = 18765;
@@ -644,6 +646,559 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
   font-size: 12px;
   line-height: 1.6;
 }
+/* ── 分页（任务看板 / 设置与运行台）───────────────────────────── */
+.dsh-agy-kb-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 14px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.22));
+}
+body[data-ds-dark-theme] .dsh-agy-kb-tabs {
+  border-bottom-color: rgba(255,255,255,0.1);
+}
+.dsh-agy-kb-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary, #888);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 6px 10px 8px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+body[data-ds-dark-theme] .dsh-agy-kb-tab {
+  color: #a9a49a;
+}
+.dsh-agy-kb-tab:hover {
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-agy-kb-tab.is-on {
+  color: var(--dsw-alias-label-primary, #222);
+  border-bottom-color: #10b981;
+}
+body[data-ds-dark-theme] .dsh-agy-kb-tab.is-on {
+  color: #f0ece2;
+}
+/* ── 设置页：卡片 / 行 / 开关 / 分段 / 步进器 ───────────────── */
+.dsh-agy-set-card {
+  border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.22));
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+body[data-ds-dark-theme] .dsh-agy-set-card {
+  border-color: rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.02);
+}
+.dsh-agy-set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dsh-agy-set-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dsh-agy-set-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #222);
+}
+body[data-ds-dark-theme] .dsh-agy-set-name {
+  color: #ece7dc;
+}
+.dsh-agy-set-hint {
+  font-size: 10px;
+  color: var(--dsw-alias-label-tertiary, #888);
+  line-height: 1.45;
+}
+.dsh-agy-sw {
+  appearance: none;
+  flex: none;
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.35));
+  background: rgba(127,127,127,0.22);
+  position: relative;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.dsh-agy-sw::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 120ms ease;
+}
+.dsh-agy-sw[aria-checked="true"] {
+  background: #10b981;
+  border-color: #10b981;
+}
+.dsh-agy-sw[aria-checked="true"]::after {
+  transform: translateX(15px);
+}
+.dsh-agy-sw:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.dsh-agy-seg {
+  display: inline-flex;
+  flex: none;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28));
+  overflow: hidden;
+}
+.dsh-agy-seg button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #666);
+  font-size: 10.5px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+body[data-ds-dark-theme] .dsh-agy-seg button {
+  color: #b8b3a8;
+}
+.dsh-agy-seg button.is-on {
+  background: rgba(16,185,129,0.16);
+  color: #0f9d6f;
+  font-weight: 600;
+}
+body[data-ds-dark-theme] .dsh-agy-seg button.is-on {
+  color: #5fe0b4;
+}
+.dsh-agy-stepper {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28));
+  padding: 1px;
+}
+.dsh-agy-stepper button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #666);
+  width: 20px;
+  height: 18px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.dsh-agy-stepper button:hover:not(:disabled) {
+  background: rgba(127,127,127,0.14);
+}
+.dsh-agy-stepper button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.dsh-agy-stepper-v {
+  min-width: 20px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #222);
+}
+body[data-ds-dark-theme] .dsh-agy-stepper-v {
+  color: #ece7dc;
+}
+.dsh-agy-input {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28));
+  background: transparent;
+  color: var(--dsw-alias-label-primary, #222);
+  border-radius: 7px;
+  font-size: 10.5px;
+  padding: 4px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+body[data-ds-dark-theme] .dsh-agy-input {
+  color: #ece7dc;
+  border-color: rgba(255,255,255,0.14);
+}
+.dsh-agy-btnrow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dsh-agy-btn {
+  appearance: none;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28));
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #555);
+  border-radius: 7px;
+  font-size: 10.5px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+body[data-ds-dark-theme] .dsh-agy-btn {
+  color: #c2bdb2;
+  border-color: rgba(255,255,255,0.14);
+}
+.dsh-agy-btn:hover:not(:disabled) {
+  background: rgba(127,127,127,0.12);
+}
+.dsh-agy-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.dsh-agy-btn.primary {
+  border-color: rgba(16,185,129,0.5);
+  color: #0f9d6f;
+  font-weight: 600;
+}
+body[data-ds-dark-theme] .dsh-agy-btn.primary {
+  color: #5fe0b4;
+}
+.dsh-agy-btn.danger:hover:not(:disabled) {
+  background: rgba(217,119,6,0.14);
+  border-color: rgba(217,119,6,0.45);
+  color: #b45309;
+}
+/* ── 角色绑定折叠行 ─────────────────────────────────────────── */
+.dsh-agy-role-row {
+  border-radius: 9px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.22));
+  padding: 0;
+  overflow: hidden;
+}
+body[data-ds-dark-theme] .dsh-agy-role-row {
+  border-color: rgba(255,255,255,0.1);
+}
+.dsh-agy-role-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+}
+.dsh-agy-role-line::-webkit-details-marker {
+  display: none;
+}
+.dsh-agy-role-line:hover {
+  background: rgba(127,127,127,0.08);
+}
+.dsh-agy-role-title {
+  font-weight: 700;
+  flex: none;
+  color: var(--dsw-alias-label-primary, #222);
+}
+body[data-ds-dark-theme] .dsh-agy-role-title {
+  color: #ece7dc;
+}
+.dsh-agy-role-brief {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary, #888);
+  font-size: 10px;
+}
+.dsh-agy-role-chev {
+  flex: none;
+  font-size: 10px;
+  color: var(--dsw-alias-label-tertiary, #888);
+}
+.dsh-agy-role-row[open] .dsh-agy-role-chev::after {
+  content: '收起';
+}
+.dsh-agy-role-row:not([open]) .dsh-agy-role-chev::after {
+  content: '展开';
+}
+.dsh-agy-role-body {
+  padding: 2px 9px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dsh-agy-role-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dsh-agy-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--dsw-alias-label-secondary, #666);
+}
+body[data-ds-dark-theme] .dsh-agy-field {
+  color: #b8b3a8;
+}
+.dsh-agy-field-k {
+  flex: none;
+  width: 42px;
+}
+.dsh-agy-select {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28));
+  background: transparent;
+  color: var(--dsw-alias-label-primary, #222);
+  border-radius: 7px;
+  font-size: 10.5px;
+  padding: 3px 6px;
+}
+body[data-ds-dark-theme] .dsh-agy-select {
+  color: #ece7dc;
+  border-color: rgba(255,255,255,0.14);
+  background: #1c1c1a;
+}
+/* ── 已定项（绿左边框）/ 待定项（灰虚线）─────────────────── */
+.dsh-agy-settled {
+  border-left: 2px solid rgba(16,185,129,0.55);
+  padding: 5px 0 5px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dsh-agy-sh-line {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary, #666);
+}
+body[data-ds-dark-theme] .dsh-agy-sh-line {
+  color: #b8b3a8;
+}
+.dsh-agy-sh-label {
+  font-weight: 700;
+  color: var(--dsw-alias-label-primary, #222);
+}
+body[data-ds-dark-theme] .dsh-agy-sh-label {
+  color: #ece7dc;
+}
+.dsh-agy-badge-s {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(16,185,129,0.16);
+  color: #0f9d6f;
+  vertical-align: 1px;
+}
+body[data-ds-dark-theme] .dsh-agy-badge-s {
+  color: #5fe0b4;
+}
+/* ── 置顶常驻状态条 ─────────────────────────────────────────── */
+.dsh-agy-pinbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: rgba(127,127,127,0.09);
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.2));
+  font-size: 10.5px;
+  overflow: hidden;
+}
+body[data-ds-dark-theme] .dsh-agy-pinbar {
+  border-color: rgba(255,255,255,0.1);
+}
+.dsh-agy-pdot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+}
+.dsh-agy-pdot.idle {
+  background: #9ca3af;
+}
+.dsh-agy-ptask {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #222);
+}
+body[data-ds-dark-theme] .dsh-agy-ptask {
+  color: #ece7dc;
+}
+.dsh-agy-pstate {
+  flex: none;
+  font-weight: 600;
+  color: #2563eb;
+}
+.dsh-agy-pcount {
+  flex: none;
+  color: #b45309;
+}
+.dsh-agy-pwhere {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary, #888);
+}
+/* ── 分隔线：以上为配置 · 以下为现状 ──────────────────────── */
+.dsh-agy-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--dsw-alias-label-tertiary, #888);
+}
+.dsh-agy-divider::before,
+.dsh-agy-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--dsw-alias-border-l1, rgba(127,127,127,0.22));
+}
+body[data-ds-dark-theme] .dsh-agy-divider::before,
+body[data-ds-dark-theme] .dsh-agy-divider::after {
+  background: rgba(255,255,255,0.1);
+}
+/* ── 当前任务 6 格 ─────────────────────────────────────────── */
+.dsh-agy-grid6 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.dsh-agy-cell {
+  border-radius: 7px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.22));
+  padding: 5px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+body[data-ds-dark-theme] .dsh-agy-cell {
+  border-color: rgba(255,255,255,0.1);
+}
+.dsh-agy-cell.is-on {
+  border-color: rgba(16,185,129,0.45);
+  background: rgba(16,185,129,0.07);
+}
+.dsh-agy-cell.is-pending {
+  opacity: 0.55;
+}
+.dsh-agy-cname {
+  font-size: 9px;
+  color: var(--dsw-alias-label-tertiary, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-agy-cmeta {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--dsw-alias-label-primary, #222);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body[data-ds-dark-theme] .dsh-agy-cmeta {
+  color: #ece7dc;
+}
+/* ── 工作台文件表 ─────────────────────────────────────────── */
+.dsh-agy-files {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.dsh-agy-frow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--dsw-alias-border-l1, rgba(127,127,127,0.16));
+}
+.dsh-agy-frow:last-child {
+  border-bottom: 0;
+}
+.dsh-agy-fpath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--dsw-alias-label-primary, #222);
+}
+body[data-ds-dark-theme] .dsh-agy-fpath {
+  color: #ece7dc;
+}
+.dsh-agy-ftag {
+  flex: none;
+  font-size: 9px;
+  color: var(--dsw-alias-label-tertiary, #888);
+}
+.dsh-agy-fstate {
+  flex: none;
+  font-size: 9px;
+  font-weight: 600;
+}
+.dsh-agy-fstate.on {
+  color: #0f9d6f;
+}
+.dsh-agy-fstate.off {
+  color: var(--dsw-alias-label-tertiary, #999);
+}
+/* 长值行（actor session id / 路径）：不省略，折行显示，右侧对齐 */
+.dsh-agy-frow.wrap {
+  align-items: flex-start;
+}
+.dsh-agy-frow.wrap .dsh-agy-ftag {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  word-break: break-all;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+body[data-ds-dark-theme] .dsh-agy-fstate.on {
+  color: #5fe0b4;
+}
+.dsh-agy-warn-note {
+  border-radius: 7px;
+  border: 1px dashed rgba(217,119,6,0.45);
+  background: rgba(217,119,6,0.07);
+  padding: 5px 7px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #b45309;
+}
+body[data-ds-dark-theme] .dsh-agy-warn-note {
+  color: #f0b866;
+}
+.dsh-agy-save-note {
+  font-size: 10px;
+  color: var(--dsw-alias-label-tertiary, #888);
+}
+.dsh-agy-save-note.err {
+  color: #b91c1c;
+}
+body[data-ds-dark-theme] .dsh-agy-save-note.err {
+  color: #f87171;
+}
 `;
 
     function readDrawerOpenPref() {
@@ -677,6 +1232,10 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       drawerOpen: readDrawerOpenPref(),
       sessionId: '',
       composerBoxEl: null,
+      // 设置页快照（config / runtime / templates / broker）与最近一次保存的结果
+      settings: null,
+      settingsError: null,
+      settingsSaving: false,
       listeners: new Set(),
     };
 
@@ -694,6 +1253,9 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
         drawerOpen: store.drawerOpen,
         sessionId: store.sessionId,
         composerBoxEl: store.composerBoxEl,
+        settings: store.settings,
+        settingsError: store.settingsError,
+        settingsSaving: store.settingsSaving,
       };
       for (const fn of [...store.listeners]) {
         try { fn(snap); } catch { /* ignore */ }
@@ -816,6 +1378,60 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       return data;
     }
 
+    /** 读设置页快照（配置 + 运行台 + 模板三态 + 总线四态）。 */
+    async function refreshSettings(sessionId) {
+      const sid = typeof sessionId === 'string' ? sessionId : store.sessionId;
+      const qs = sid ? `?sessionId=${encodeURIComponent(sid)}` : '';
+      const data = await fetchJsonWithTimeout(HOST_CONFIG_API + qs, { cache: 'no-store' });
+      if (data && data.ok) {
+        store.settings = data;
+        store.settingsError = null;
+        notifyStore();
+      }
+      return data;
+    }
+
+    /**
+     * 提交一份配置 patch。客户端只发「要改哪几项」，落盘前的一切校验都在 Host 侧，
+     * 失败时把 Host 返回的错误原样显示（不猜、不改写成友好文案）。
+     */
+    async function saveSettingsPatch(patch) {
+      store.settingsSaving = true;
+      store.settingsError = null;
+      notifyStore();
+      const qs = store.sessionId ? `?sessionId=${encodeURIComponent(store.sessionId)}` : '';
+      let data = null;
+      try {
+        const res = await fetch(HOST_CONFIG_API + qs, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          cache: 'no-store',
+          body: JSON.stringify({ sessionId: store.sessionId || '', patch }),
+        });
+        data = await res.json();
+      } catch (error) {
+        data = { ok: false, error: String(error?.message || error) };
+      }
+      store.settingsSaving = false;
+      if (data && data.ok) {
+        store.settings = data;
+        store.settingsError = null;
+        // 协作开关与总线端口会随配置一起变，顺手把主看板也刷新一遍。
+        applyServerSnapshot({
+          ok: true,
+          enabled: data.enabled,
+          brokerPort: data.broker?.port,
+          brokerState: data.broker?.state,
+          brokerMessage: data.broker?.message,
+          brokerPid: data.broker?.pid,
+        });
+      } else {
+        store.settingsError = String(data?.error || '保存失败');
+        notifyStore();
+      }
+      return data;
+    }
+
     async function clearAllRecords() {
       const data = await callEndpoint(HOST_CLEAR_API, directClearApi(store.brokerPort), 'POST', store.sessionId, {});
       if (data && data.ok) {
@@ -839,6 +1455,9 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
         drawerOpen: store.drawerOpen,
         sessionId: store.sessionId,
         composerBoxEl: store.composerBoxEl,
+        settings: store.settings,
+        settingsError: store.settingsError,
+        settingsSaving: store.settingsSaving,
       }));
       useEffect(() => {
         const listener = (next) => setSnap(next);
@@ -959,7 +1578,34 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       return `${m}m ${s}s`;
     }
 
-    /** 计算某组（或最新）记录在 6 步流程图上的状态 */
+    /** 记录的 role：新协议直接给 role；旧记录只有 phase，按 phase 推断（review→reviewer，其余→planner）。 */
+    function roleOf(rec) {
+      const role = String(rec?.role || '').toLowerCase();
+      if (role === 'planner' || role === 'reviewer') return role;
+      return String(rec?.phase || '').toLowerCase() === 'review' ? 'reviewer' : 'planner';
+    }
+
+    /**
+     * 把一次往返回执归一成三档：pending（还没回）/ pass / needs_revision。
+     * 新协议回执只带 verdict: pass | needs_revision；旧词表（APPROVED / PLAN_READY …）
+     * 只做兼容映射，不再往界面上输出 —— §9.2 定的是删除而不是翻译。
+     */
+    function verdictOf(rec) {
+      if (!rec || rec.status !== 'replied') return 'pending';
+      const raw = String(rec.aToD?.verdict || '').trim().toLowerCase();
+      if (raw === 'pass' || raw === 'approved') return 'pass';
+      if (raw === 'needs_revision' || raw === 'changes_requested') return 'needs_revision';
+      // 旧协议里 plan / consult 阶段的回执本来就不是审核结论，一律当作「已回复」处理。
+      return 'pass';
+    }
+
+    /**
+     * 计算某组（或最新）记录在 6 步流程图上的状态。
+     *
+     * 六个节点按角色分工切，不再按旧 phase：
+     *   0 D 接收任务 / 1 D → 规划 agent 提交需求 / 2 规划 agent 回 02 与 03
+     *   3 D 执行任务 / 4 D → 审核 agent 送审 / 5 审核 agent 回 verdict
+     */
     function computeFlowSteps(records, focusRecord) {
       const list = Array.isArray(records) ? records : [];
       if (!list.length) {
@@ -976,94 +1622,74 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       const idx = list.findIndex((r) => r.requestId === target.requestId);
       const slice = idx >= 0 ? list.slice(0, idx + 1) : list;
 
-      // 找到离 target 最近的 plan、consult 和 review（同一任务流）
-      let latestPlan = null;
-      let latestReview = null;
-      let latestConsult = null;
+      // 同一任务流里找最近的一次 planner 请求与最近的一次 reviewer 请求。
+      let latestPlanner = null;
+      let latestReviewer = null;
       for (let i = slice.length - 1; i >= 0; i--) {
         const r = slice[i];
-        if (!latestReview && r.phase === 'review') latestReview = r;
-        if (!latestConsult && r.phase === 'consult') latestConsult = r;
-        if (!latestPlan && r.phase === 'plan') {
-          latestPlan = r;
-          break;
+        const role = roleOf(r);
+        if (role === 'reviewer') {
+          if (!latestReviewer) latestReviewer = r;
+        } else if (!latestPlanner) {
+          latestPlanner = r;
         }
       }
-      if (target.phase === 'plan') {
-        latestPlan = target;
-        latestReview = null;
-        latestConsult = null;
+      // 选中的就是某一轮的请求：以它为准，不看它之后的轮次。
+      const focusRole = roleOf(target);
+      if (focusRole === 'reviewer') latestReviewer = target;
+      else latestPlanner = target;
+      if (target.status !== 'replied') {
+        if (focusRole === 'reviewer') latestReviewer = target;
+        else latestPlanner = target;
       }
 
-      // 6 个节点：
+      // 6 个节点（按角色分工，不再按旧 phase）：
       // 0: D 接收任务
-      // 1: D->A 提交任务 (Plan)
-      // 2: A->D 返回规划方案
-      // 3: D 按方案执行 / 遇疑协商 (Consult)
-      // 4: D->A 提交结果 (Review)
-      // 5: A->D 审核结论
+      // 1: D → 规划 agent 提交需求
+      // 2: 规划 agent 写 02 plan.md + 03 tasks.md
+      // 3: D 按 03 执行
+      // 4: D → 审核 agent 送审
+      // 5: 审核 agent 写 04 verdict
       const states = ['done', 'idle', 'idle', 'idle', 'idle', 'idle'];
       let badgeText = '待命';
       let badgeTone = '';
       let reworkNote = '';
 
-      if (latestPlan && !latestReview) {
-        if (latestPlan.status !== 'replied') {
+      if (!latestReviewer) {
+        // 只有规划轮：要么在等规划 agent，要么方案已回、D 正在执行。
+        if (latestPlanner && latestPlanner.status !== 'replied') {
           states[1] = 'active';
-          badgeText = 'A 正在规划中…';
+          badgeText = '规划 agent 正在拆解任务…';
           badgeTone = 'active';
-        } else if (latestConsult && latestConsult.status !== 'replied') {
+        } else if (latestPlanner) {
           states[1] = 'done';
           states[2] = 'done';
           states[3] = 'active';
-          badgeText = 'A↔D 途中协商中…';
-          badgeTone = 'active';
-        } else if (latestConsult) {
-          states[1] = 'done';
-          states[2] = 'done';
-          states[3] = 'active';
-          badgeText = '协商已定 · D 继续执行';
-          badgeTone = 'active';
-        } else {
-          states[1] = 'done';
-          states[2] = 'done';
-          states[3] = 'active';
-          badgeText = 'D 按方案执行中';
+          badgeText = 'D 按 03-任务清单 执行中';
           badgeTone = 'active';
         }
-      } else if (latestConsult && !latestReview) {
-        states[1] = 'done';
-        states[2] = 'done';
-        states[3] = 'active';
-        if (latestConsult.status !== 'replied') {
-          badgeText = 'A↔D 途中协商中…';
-          badgeTone = 'active';
-        } else {
-          badgeText = '协商已定 · D 继续执行';
-          badgeTone = 'active';
-        }
-      } else if (latestReview) {
+      } else {
         states[1] = 'done';
         states[2] = 'done';
         states[3] = 'done';
-        if (latestReview.status !== 'replied') {
+        const v = verdictOf(latestReviewer);
+        if (v === 'pending') {
           states[4] = 'active';
-          badgeText = 'A 正在审核结果…';
+          badgeText = '审核 agent 正在核对需求…';
           badgeTone = 'active';
+        } else if (v === 'pass') {
+          states[4] = 'done';
+          states[5] = 'done';
+          badgeText = '审核通过 · 需求已达成';
+          badgeTone = 'done';
         } else {
           states[4] = 'done';
-          const verdict = String(latestReview.aToD?.verdict || '').toUpperCase();
-          if (verdict === 'APPROVED') {
-            states[5] = 'done';
-            badgeText = '审核通过 · 可直接使用';
-            badgeTone = 'done';
-          } else {
-            states[5] = 'warn';
-            states[3] = 'active';
-            badgeText = '需要修改 · 返工中';
-            badgeTone = 'warn';
-            reworkNote = 'A 指出了需要修改之处，D 需修改后重新提交第 5 步审核 (Review)。';
-          }
+          states[5] = 'warn';
+          // 驳回不是直接丢回 Executor：先由规划 agent 出 05-修改方案，D 才能改。
+          states[2] = 'active';
+          badgeText = '已驳回 · 等规划 agent 出 05-修改方案';
+          badgeTone = 'warn';
+          reworkNote = '审核 agent 写了 needs_revision。返工路径是：规划 agent 读 04 的 findings → 写 05/revision-r<N>.md → D 按它改 → 重新送审。D 与审核 agent 之间没有直接通道。';
         }
       }
 
@@ -1267,11 +1893,643 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       );
     }
 
+    /* ───────────────────────── 设置页（§12） ───────────────────────── */
+
+    /** 开关（aria-checked 驱动样式，disabled 时只读）。 */
+    function SetSwitch({ checked, disabled, onChange }) {
+      return h('button', {
+        type: 'button',
+        className: 'dsh-agy-sw',
+        role: 'switch',
+        'aria-checked': checked ? 'true' : 'false',
+        disabled: Boolean(disabled),
+        onClick: () => {
+          if (!disabled) onChange(!checked);
+        },
+      });
+    }
+
+    /** 分段选择器（两三个互斥值）。 */
+    function SetSeg({ value, options, disabled, onChange }) {
+      return h(
+        'div',
+        { className: 'dsh-agy-seg' },
+        options.map((o) =>
+          h(
+            'button',
+            {
+              key: o.id,
+              type: 'button',
+              className: value === o.id ? 'is-on' : '',
+              disabled: Boolean(disabled),
+              onClick: () => {
+                if (!disabled && value !== o.id) onChange(o.id);
+              },
+            },
+            o.label,
+          ),
+        ),
+      );
+    }
+
+    /** 配置行：左边名字 + 提示，右边控件。 */
+    function SetRow({ name, hint, children }) {
+      return h(
+        'div',
+        { className: 'dsh-agy-set-row' },
+        h(
+          'div',
+          { className: 'dsh-agy-set-row-label' },
+          h('span', { className: 'dsh-agy-set-name' }, name),
+          hint ? h('span', { className: 'dsh-agy-set-hint' }, hint) : null,
+        ),
+        children,
+      );
+    }
+
+    /** 已定项的绿框说明（左边框 2px，内容只读）。 */
+    function Settled({ label, badge, lines }) {
+      return h(
+        'div',
+        { className: 'dsh-agy-settled' },
+        h(
+          'div',
+          { className: 'dsh-agy-sh-line' },
+          h('span', { className: 'dsh-agy-sh-label' }, label),
+          badge ? h('span', { className: 'dsh-agy-badge-s' }, badge) : null,
+        ),
+        ...lines.map((t, i) => h('div', { key: i, className: 'dsh-agy-sh-line' }, t)),
+      );
+    }
+
+    const STATE_WAITING = {
+      drafting: '等规划 agent 写 02 / 03',
+      ready: '等 D 开工',
+      running: '等 D 交付',
+      reviewing: '等审核 agent 判定',
+      revising: '等规划 agent 写 05 修改方案',
+      'final-review': '等审核 agent 终审',
+      done: '已收尾',
+      blocked: '已阻塞 · 等人类处理',
+      escalated: '已升级 · 等人类处理',
+      aborted: '已中止',
+    };
+
+    const TEMPLATE_STATE_TEXT = {
+      not_installed: '未安装 · 外部角色不可用，只能跑进程内三角色',
+      installed: '已安装且哈希一致',
+      drifted: '与安装记录不一致 · A 侧可能仍在按旧协议回传',
+    };
+
+    const BROKER_STATE_TEXT = {
+      attached: '在线（复用已有实例）',
+      spawned: '在线（本次拉起）',
+      foreign: '端口被其他程序占用',
+      unreachable: '进程在但 /health 未就绪',
+      missing_script: '找不到 broker.mjs（未安装）',
+      offline: '未启动',
+      unknown: '未知',
+    };
+
+    /**
+     * 设置与运行台（§12）。
+     *
+     * 上半是配置（改了就落盘，Host 侧校验），中间一条「以上为配置 · 以下为现状」，
+     * 下半是运行台（只读，数据全部来自 Host 的 /config 快照）。
+     * 只读的边界是刻意的：越权判定靠 Workspace 全树快照 diff，
+     * 人从 UI 写进六目录与角色越权在快照里长得一样，会判废误伤（§12.5）。
+     */
+    function SettingsBody({ snap }) {
+      const settings = snap.settings;
+      const cfg = settings?.config || null;
+      const runtime = settings?.runtime || null;
+      const templates = settings?.templates || null;
+      const broker = settings?.broker || null;
+
+      const [rootDraft, setRootDraft] = useState('');
+      const [portDraft, setPortDraft] = useState('');
+      const [models, setModels] = useState({});
+      const [actors, setActors] = useState({});
+
+      useEffect(() => {
+        if (!cfg) return;
+        setRootDraft(String(cfg.workspaceRoot || ''));
+        setPortDraft(String(cfg.brokerPort || ''));
+        const nextModels = {};
+        const nextActors = {};
+        for (const role of ['planner', 'executor', 'reviewer']) {
+          nextModels[role] = String(cfg.roles?.[role]?.model || '');
+          nextActors[role] = String(cfg.roles?.[role]?.actor_id || '');
+        }
+        setModels(nextModels);
+        setActors(nextActors);
+      }, [cfg?.updatedAt, cfg?.workspaceRoot, cfg?.brokerPort]);
+
+      if (!settings || !cfg) {
+        return h(
+          'div',
+          { className: 'dsh-agy-kb-body' },
+          h(
+            'div',
+            { className: 'dsh-agy-empty' },
+            '正在读取配置…',
+            h('br'),
+            '若长时间停在这里，点上面的「刷新」。',
+          ),
+        );
+      }
+
+      const patch = (p) => saveSettingsPatch(p);
+      const roles = settings.roles || {};
+      const enums = settings.enums || {};
+      const enabled = Boolean(settings.enabled);
+      const saving = Boolean(snap.settingsSaving);
+
+      const stage = runtime?.active ? String(runtime.state || '') : '';
+      const rejectionLimit = Number(cfg.rejection_limit || 2);
+
+      return h(
+        'div',
+        { className: 'dsh-agy-kb-body' },
+        // 置顶常驻状态条：460px 下不显示任务 id（太窄会挤掉「在等谁」）
+        h(
+          'div',
+          { className: 'dsh-agy-pinbar' },
+          h('span', { className: 'dsh-agy-pdot' + (runtime?.active ? '' : ' idle') }),
+          runtime?.active ? h('span', { className: 'dsh-agy-ptask' }, runtime.task_id) : null,
+          h(
+            'span',
+            { className: 'dsh-agy-pstate' },
+            runtime?.active ? String(runtime.state) : '没有在跑的任务',
+          ),
+          runtime?.active
+            ? h(
+                'span',
+                { className: 'dsh-agy-pcount' },
+                `驳回 ${runtime.rejection_count}/${runtime.rejection_limit}`,
+              )
+            : null,
+          h(
+            'span',
+            { className: 'dsh-agy-pwhere' },
+            runtime?.active
+              ? STATE_WAITING[String(runtime.state)] || ''
+              : '启动一个任务后这里显示它在等谁',
+          ),
+        ),
+
+        // A 卡：角色绑定
+        h(
+          'section',
+          { className: 'dsh-agy-set-card' },
+          h(
+            'div',
+            { className: 'dsh-agy-section-hd' },
+            h('div', { className: 'dsh-agy-section-title' }, '角色绑定'),
+            h(
+              'span',
+              { className: 'dsh-agy-flow-status-tag' + (settings.validation?.ok ? ' done' : ' warn') },
+              settings.validation?.ok ? '绑定自洽' : '绑定有冲突',
+            ),
+          ),
+          ...['planner', 'executor', 'reviewer'].map((role) => {
+            const meta = roles[role] || {};
+            const cur = cfg.roles?.[role] || {};
+            const isExecutor = role === 'executor';
+            return h(
+              'details',
+              { key: role, className: 'dsh-agy-role-row' },
+              h(
+                'summary',
+                { className: 'dsh-agy-role-line' },
+                h('span', { className: 'dsh-agy-role-title' }, meta.title || role),
+                h('span', { className: 'dsh-agy-role-brief' }, meta.brief || ''),
+                h('span', { className: 'dsh-agy-role-chev' }),
+              ),
+              h(
+                'div',
+                { className: 'dsh-agy-role-body' },
+                h(
+                  'div',
+                  { className: 'dsh-agy-role-fields' },
+                  h(
+                    'div',
+                    { className: 'dsh-agy-field' },
+                    h('span', { className: 'dsh-agy-field-k' }, '载体'),
+                    h(
+                      'select',
+                      {
+                        className: 'dsh-agy-select',
+                        value: cur.carrier || 'in-process',
+                        disabled: isExecutor || saving,
+                        onChange: (e) =>
+                          patch({ roles: { [role]: { carrier: e.target.value } } }),
+                      },
+                      (enums.carriers || ['in-process', 'session', 'external']).map((c) =>
+                        h(
+                          'option',
+                          { key: c, value: c },
+                          c === 'in-process'
+                            ? 'in-process（进程内）'
+                            : c === 'session'
+                              ? 'session（当前 DSH 会话）'
+                              : 'external（Antigravity 侧）',
+                        ),
+                      ),
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { className: 'dsh-agy-field' },
+                    h('span', { className: 'dsh-agy-field-k' }, '模型'),
+                    h('input', {
+                      className: 'dsh-agy-input',
+                      value: models[role] ?? '',
+                      placeholder: '留空 = 继承会话默认',
+                      disabled: saving,
+                      onChange: (e) => setModels({ ...models, [role]: e.target.value }),
+                      onBlur: () => {
+                        const want = String(models[role] ?? '').trim();
+                        if (want === String(cur.model || '')) return;
+                        patch({ roles: { [role]: { model: want || null } } });
+                      },
+                    }),
+                  ),
+                  h(
+                    'div',
+                    { className: 'dsh-agy-field' },
+                    h('span', { className: 'dsh-agy-field-k' }, 'Actor'),
+                    h('input', {
+                      className: 'dsh-agy-input',
+                      value: actors[role] ?? '',
+                      placeholder: '留空 = 由 Host 分配',
+                      disabled: saving,
+                      onChange: (e) => setActors({ ...actors, [role]: e.target.value }),
+                      onBlur: () => {
+                        const want = String(actors[role] ?? '').trim();
+                        if (want === String(cur.actor_id || '')) return;
+                        patch({ roles: { [role]: { actor_id: want || null } } });
+                      },
+                    }),
+                  ),
+                ),
+                h(Settled, {
+                  label: '读写边界',
+                  badge: '#5 B6 已定',
+                  lines: [
+                    `读：${meta.read || ''}`,
+                    `写：${meta.write || ''}`,
+                    meta.note || '',
+                  ],
+                }),
+              ),
+            );
+          }),
+          settings.validation?.ok
+            ? null
+            : h(
+                'div',
+                { className: 'dsh-agy-warn-note' },
+                (settings.validation?.errors || []).join('；'),
+              ),
+        ),
+
+        // B 卡：协作与工作台
+        h(
+          'section',
+          { className: 'dsh-agy-set-card' },
+          h(
+            'div',
+            { className: 'dsh-agy-section-hd' },
+            h('div', { className: 'dsh-agy-section-title' }, '协作与工作台'),
+          ),
+          h(SetRow, {
+            name: '协作总开关',
+            hint: '只作用于当前会话（§12.6：开关按会话，角色绑定按机器）',
+            children: h(SetSwitch, {
+              checked: enabled,
+              disabled: saving || !snap.sessionId,
+              onChange: (v) => patch({ enabled: v }),
+            }),
+          }),
+          h(SetRow, {
+            name: '角色绑定模式',
+            hint:
+              cfg.role_binding_mode === 'dual'
+                ? 'dual：规划与审核可同一 agent，审核阶段强制冷调用'
+                : 'triple：三个角色三个 agent，同 actor 占两槽会被拒启',
+            children: h(SetSeg, {
+              value: cfg.role_binding_mode,
+              disabled: saving,
+              options: [
+                { id: 'triple', label: 'triple' },
+                { id: 'dual', label: 'dual' },
+              ],
+              onChange: (v) => patch({ role_binding_mode: v }),
+            }),
+          }),
+          h(SetRow, {
+            name: '预估子 agent 数量',
+            hint: '关掉后规划 agent 不填 subagent_count（也不要求 D 生成子 agent）',
+            children: h(SetSwitch, {
+              checked: Boolean(cfg.estimate_subagents),
+              disabled: saving,
+              onChange: (v) => patch({ estimate_subagents: v }),
+            }),
+          }),
+          h(SetRow, {
+            name: '审核档位',
+            hint:
+              cfg.reviewer_mode === 'strict'
+                ? 'strict：findings 的 requirement_ref 必须命中 03 里的真实 id'
+                : 'loose：不校验 requirement_ref',
+            children: h(SetSeg, {
+              value: cfg.reviewer_mode,
+              disabled: saving,
+              options: [
+                { id: 'strict', label: '严格' },
+                { id: 'loose', label: '宽松' },
+              ],
+              onChange: (v) => patch({ reviewer_mode: v }),
+            }),
+          }),
+          h(SetRow, {
+            name: '驳回上限',
+            hint:
+              stage && stage !== 'drafting'
+                ? `当前阶段是 ${stage}，只能在 drafting 改`
+                : '驳回达到上限后下一轮进 06/final.md 终审',
+            children: h(
+              'div',
+              { className: 'dsh-agy-stepper' },
+              h(
+                'button',
+                {
+                  type: 'button',
+                  disabled: saving || rejectionLimit <= (enums.rejection_limit?.min ?? 1),
+                  onClick: () => patch({ rejection_limit: rejectionLimit - 1 }),
+                },
+                '−',
+              ),
+              h('span', { className: 'dsh-agy-stepper-v' }, rejectionLimit),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  disabled: saving || rejectionLimit >= (enums.rejection_limit?.max ?? 5),
+                  onClick: () => patch({ rejection_limit: rejectionLimit + 1 }),
+                },
+                '+',
+              ),
+            ),
+          }),
+          h(SetRow, {
+            name: '临时工作台根路径',
+            hint: '改完只影响新任务；已在跑的树不搬家',
+            children: h('input', {
+              className: 'dsh-agy-input',
+              value: rootDraft,
+              disabled: saving,
+              onChange: (e) => setRootDraft(e.target.value),
+              onBlur: () => {
+                if (rootDraft === String(cfg.workspaceRoot || '')) return;
+                patch({ workspaceRoot: rootDraft });
+              },
+            }),
+          }),
+          h(SetRow, {
+            name: '总线端口',
+            hint: 'env DSH_AGY_COLLAB_PORT 优先于这里的值',
+            children: h('input', {
+              className: 'dsh-agy-input',
+              style: { maxWidth: '84px' },
+              value: portDraft,
+              disabled: saving,
+              onChange: (e) => setPortDraft(e.target.value.replace(/[^0-9]/g, '')),
+              onBlur: () => {
+                const n = Number(portDraft);
+                if (!Number.isInteger(n) || n < 1 || n > 65535) {
+                  setPortDraft(String(cfg.brokerPort || ''));
+                  return;
+                }
+                if (n === Number(cfg.brokerPort)) return;
+                patch({ brokerPort: n });
+              },
+            }),
+          }),
+          h(Settled, {
+            label: '实际目录层级',
+            badge: '#4 Q3 已定',
+            lines: [
+              '<root>/<host-pid>-<boot-id>/<session-id>/<task-id>/01-06',
+              '每一级都带身份，多个会话并发天然不互踩，不需要额外的锁。',
+            ],
+          }),
+          h(Settled, {
+            label: '下次启动会清扫',
+            badge: '#4 Q4 已定',
+            lines: [
+              '判据一：目录名里的 pid 已不存在',
+              '判据二：boot-id 与本次开机不匹配（是上一次开机留下的）',
+              '只清 Host 自己按命名规则建的那棵，不碰别人放的东西。',
+            ],
+          }),
+          h(Settled, {
+            label: 'A 侧模板',
+            badge: templates?.status || 'unknown',
+            lines: [
+              TEMPLATE_STATE_TEXT[templates?.status] || '未知',
+              ...(templates?.items || []).map(
+                (it) => `${it.relPath} · ${it.state}${it.templateVersion ? ` · v${it.templateVersion}` : ''}`,
+              ),
+              ...(templates?.legacyPresent || []).length
+                ? [`⚠ 仍有 v1 遗留：${(templates.legacyPresent || []).join('、')}`]
+                : [],
+            ],
+          }),
+          h(Settled, {
+            label: '协作总线',
+            badge: broker?.state || 'unknown',
+            lines: [
+              `${BROKER_STATE_TEXT[broker?.state] || broker?.state || '未知'} · 127.0.0.1:${broker?.port ?? cfg.brokerPort}${broker?.pid ? ` · pid ${broker.pid}` : ''}`,
+              broker?.message || '',
+              '总线只在有外部角色时才需要；进程内三角色不经过它。',
+            ].filter(Boolean),
+          }),
+          h(
+            'div',
+            { className: 'dsh-agy-btnrow' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dsh-agy-btn primary',
+                disabled: saving,
+                onClick: () => refreshSettings(snap.sessionId),
+              },
+              '重新读取',
+            ),
+            snap.settingsError
+              ? h('span', { className: 'dsh-agy-save-note err' }, snap.settingsError)
+              : h(
+                  'span',
+                  { className: 'dsh-agy-save-note' },
+                  saving ? '保存中…' : '改动即时落盘，Host 侧校验不通过会原样报错',
+                ),
+          ),
+        ),
+
+        // 分界：以上为配置 · 以下为现状
+        h('div', { className: 'dsh-agy-divider' }, '以上为配置 · 以下为现状'),
+
+        // C 卡：当前任务
+        h(
+          'section',
+          { className: 'dsh-agy-set-card' },
+          h(
+            'div',
+            { className: 'dsh-agy-section-hd' },
+            h('div', { className: 'dsh-agy-section-title' }, '当前任务'),
+            h(
+              'span',
+              { className: 'dsh-agy-flow-status-tag' + (runtime?.active ? ' active' : '') },
+              runtime?.active
+                ? `${runtime.state} · 第 ${runtime.round} 轮 · 驳回 ${runtime.rejection_count}/${runtime.rejection_limit}`
+                : '没有在跑的任务',
+            ),
+          ),
+          runtime?.active
+            ? h(
+                'div',
+                { className: 'dsh-agy-grid6' },
+                ...(runtime.files || []).map((f2) =>
+                  h(
+                    'div',
+                    {
+                      key: f2.slot,
+                      className: 'dsh-agy-cell' + (f2.exists ? ' is-on' : ' is-pending'),
+                      title: `${f2.dir}/${f2.fileName}`,
+                    },
+                    h('div', { className: 'dsh-agy-cname' }, f2.dir),
+                    h('div', { className: 'dsh-agy-cmeta' }, f2.fileName),
+                    h('div', { className: 'dsh-agy-ftag' }, `${f2.semantic} · ${f2.exists ? '有' : '未生成'}`),
+                  ),
+                ),
+              )
+            : h(
+                'div',
+                { className: 'dsh-agy-empty' },
+                '当前会话还没有在跑的任务。',
+                h('br'),
+                '在对话框里让 D 调 collab_start 开始一个任务，这里就会显示六个目录的实际文件。',
+              ),
+          runtime?.active
+            ? h(
+                'div',
+                { className: 'dsh-agy-warn-note' },
+                STATE_WAITING[String(runtime.state)] || '',
+              )
+            : null,
+        ),
+
+        // D 卡：本次任务的角色实例（真实数据只有 actor session id 与需求 id）
+        h(
+          'section',
+          { className: 'dsh-agy-set-card' },
+          h(
+            'div',
+            { className: 'dsh-agy-section-hd' },
+            h('div', { className: 'dsh-agy-section-title' }, '角色实例'),
+          ),
+          runtime?.active
+            ? h(
+                'div',
+                { className: 'dsh-agy-files' },
+                h(
+                  'div',
+                  { className: 'dsh-agy-frow wrap' },
+                  h('span', { className: 'dsh-agy-fpath' }, 'actor session'),
+                  h(
+                    'span',
+                    { className: 'dsh-agy-ftag' },
+                    (runtime.actor_session_ids || []).join('、') || '（尚未起过角色实例）',
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'dsh-agy-frow wrap' },
+                  h('span', { className: 'dsh-agy-fpath' }, '03 需求 id'),
+                  h(
+                    'span',
+                    { className: 'dsh-agy-ftag' },
+                    (runtime.requirement_ids || []).join('、') || '（03 还没写）',
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'dsh-agy-frow wrap' },
+                  h('span', { className: 'dsh-agy-fpath' }, '工作台根'),
+                  h('span', { className: 'dsh-agy-ftag' }, runtime.task_root || ''),
+                ),
+              )
+            : h('div', { className: 'dsh-agy-set-hint' }, '没有在跑的任务时没有角色实例。'),
+        ),
+
+        // E 卡：工作台文件表（六行，语义标签照 §4.1）
+        h(
+          'section',
+          { className: 'dsh-agy-set-card' },
+          h(
+            'div',
+            { className: 'dsh-agy-section-hd' },
+            h('div', { className: 'dsh-agy-section-title' }, '工作台文件'),
+          ),
+          h(
+            'div',
+            { className: 'dsh-agy-files' },
+            ...(runtime?.active && Array.isArray(runtime.files)
+              ? runtime.files
+              : [
+                  { slot: 'request', dir: '01-原始任务需求和目的', fileName: 'request.md', exists: false, semantic: '不可变' },
+                  { slot: 'plan', dir: '02-执行方案', fileName: 'plan.md', exists: false, semantic: '可覆盖' },
+                  { slot: 'tasks', dir: '03-任务清单', fileName: 'tasks.md', exists: false, semantic: '已冻结' },
+                  { slot: 'review', dir: '04-审核结果', fileName: 'review-r<N>.md', exists: false, semantic: '只增不改' },
+                  { slot: 'revision', dir: '05-修改方案', fileName: 'revision-r<N>.md', exists: false, semantic: '只增不改' },
+                  { slot: 'final', dir: '06-最终审核', fileName: 'final.md', exists: false, semantic: '终审' },
+                ]
+            ).map((f2) =>
+              h(
+                'div',
+                { key: f2.slot, className: 'dsh-agy-frow' },
+                h('span', { className: 'dsh-agy-fpath' }, `${f2.dir}/${f2.fileName}`),
+                h('span', { className: 'dsh-agy-ftag' }, f2.semantic),
+                h(
+                  'span',
+                  { className: 'dsh-agy-fstate ' + (f2.exists ? 'on' : 'off') },
+                  f2.exists ? '有' : '—',
+                ),
+              ),
+            ),
+          ),
+          h(Settled, {
+            label: '这里只读，不给编辑框',
+            badge: '#12.5',
+            lines: [
+              '越权判定靠 Workspace 全树快照 diff（§6.4）。',
+              '人从 UI 写进去的内容与角色越权在快照里长得一样，会判废误伤。',
+            ],
+          }),
+        ),
+      );
+    }
+
     /** 右侧收起/展开的 A↔D 协作任务看板 */
     function KanbanDrawer({ snap }) {
       const [filterPhase, setFilterPhase] = useState('all');
       const [selectedId, setSelectedId] = useState(null);
       const [confirmClear, setConfirmClear] = useState(false);
+      // §12.1：右侧看板分两页 —— 任务看板 / 设置与运行台。
+      const [tab, setTab] = useState('board');
 
       const records = Array.isArray(snap.records) ? snap.records : [];
       const focusRecord = useMemo(() => {
@@ -1287,7 +2545,7 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       const filteredRecords = useMemo(() => {
         const withIndex = records.map((r, i) => ({ ...r, roundNumber: i + 1 }));
         const sub =
-          filterPhase === 'all' ? withIndex : withIndex.filter((r) => r.phase === filterPhase);
+          filterPhase === 'all' ? withIndex : withIndex.filter((r) => roleOf(r) === filterPhase);
         return sub.slice().reverse();
       }, [records, filterPhase]);
 
@@ -1305,11 +2563,11 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
 
       const nodeMeta = [
         { step: 'STEP 1', name: 'D 接收任务', desc: '用户在 D 下达指令' },
-        { step: 'STEP 2', name: 'D → A 提交任务', desc: 'phase: plan 转达' },
-        { step: 'STEP 3', name: 'A → D 返回规划', desc: '提交整体任务方案' },
-        { step: 'STEP 4', name: 'D 执行任务', desc: '按方案执行 / 遇疑向 A 协商' },
-        { step: 'STEP 5', name: 'D → A 提交结果', desc: 'phase: review 送审' },
-        { step: 'STEP 6', name: 'A → D 审核结论', desc: '可用 / 需修改意见' },
+        { step: 'STEP 2', name: 'D → 规划 agent', desc: '提交 01 原始需求与目的' },
+        { step: 'STEP 3', name: '规划 agent 交付', desc: '02 方案 + 03 任务清单（冻结）' },
+        { step: 'STEP 4', name: 'D 执行任务', desc: '按 03 清单执行，写仓库' },
+        { step: 'STEP 5', name: 'D → 审核 agent', desc: '送审：读 03 + 仓库产物' },
+        { step: 'STEP 6', name: '审核 agent 判定', desc: 'pass / needs_revision' },
       ];
 
       return h(
@@ -1425,8 +2683,34 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
               ),
             ),
           ),
-          // 滚动主体
+          // 分页（§12.1）：设置页放这里而不是全局设置页 —— 协作开关按会话，
+          // 四个全局挂载点的 standardProps 都没有 sessionId，放过去会改到别的会话。
           h(
+            'nav',
+            { className: 'dsh-agy-kb-tabs' },
+            [
+              { id: 'board', label: '任务看板' },
+              { id: 'settings', label: '设置与运行台' },
+            ].map((t) =>
+              h(
+                'button',
+                {
+                  key: t.id,
+                  type: 'button',
+                  className: 'dsh-agy-kb-tab' + (tab === t.id ? ' is-on' : ''),
+                  onClick: () => {
+                    setTab(t.id);
+                    if (t.id === 'settings') refreshSettings(snap.sessionId);
+                  },
+                },
+                t.label,
+              ),
+            ),
+          ),
+          // 滚动主体
+          tab === 'settings'
+            ? h(SettingsBody, { snap })
+            : h(
             'div',
             { className: 'dsh-agy-kb-body' },
             // 上半部分：实时流程图
@@ -1516,9 +2800,8 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
                 { className: 'dsh-agy-filter-tabs' },
                 [
                   { id: 'all', label: '全部' },
-                  { id: 'plan', label: '规划 Plan' },
-                  { id: 'consult', label: '协商 Consult' },
-                  { id: 'review', label: '审核 Review' },
+                  { id: 'planner', label: '规划 agent' },
+                  { id: 'reviewer', label: '审核 agent' },
                 ].map((tab) =>
                   h(
                     'button',
@@ -1546,28 +2829,22 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
                   'div',
                   { className: 'dsh-agy-rec-list' },
                   filteredRecords.map((rec) => {
-                    const isPlan = rec.phase === 'plan';
-                    const isConsult = rec.phase === 'consult';
+                    const role = roleOf(rec);
+                    const isPlanner = role === 'planner';
                     const isReplied = rec.status === 'replied' && rec.aToD;
-                    const verdict = String(rec.aToD?.verdict || '').toUpperCase();
-                    const verdictCls = !isReplied
-                      ? 'waiting'
-                      : verdict === 'APPROVED'
-                        ? 'approved'
-                        : verdict === 'PLAN_READY'
-                          ? 'plan_ready'
-                          : verdict === 'CONSULT_ANSWERED'
-                            ? 'consult_answered'
-                            : 'changes';
-                    const verdictLabel = !isReplied
-                      ? '⏳ 等待 A 响应…'
-                      : verdict === 'APPROVED'
-                        ? '✅ APPROVED (审核通过)'
-                        : verdict === 'PLAN_READY'
-                          ? '📋 PLAN_READY (规划已提交)'
-                          : verdict === 'CONSULT_ANSWERED'
-                            ? '💬 CONSULT_ANSWERED (已协商确定)'
-                            : `⚠️ ${verdict || 'CHANGES_REQUESTED'} (需修改)`;
+                    const v = verdictOf(rec);
+                    const verdictCls =
+                      v === 'pending' ? 'waiting' : v === 'pass' ? 'approved' : 'changes';
+                    const verdictLabel =
+                      v === 'pending'
+                        ? isPlanner
+                          ? '⏳ 等规划 agent 交付'
+                          : '⏳ 等审核 agent 判定'
+                        : v === 'pass'
+                          ? isPlanner
+                            ? '✅ 已交付 02 / 03'
+                            : '✅ pass（需求已达成）'
+                          : '⚠️ needs_revision（需修改）';
                     const duration = fmtDuration(rec.createdAt, rec.repliedAt);
                     const isSel = focusRecord && focusRecord.requestId === rec.requestId;
 
@@ -1590,9 +2867,12 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
                           h('span', { className: 'dsh-agy-round-num' }, `#${rec.roundNumber}`),
                           h(
                             'span',
-                            { className: 'dsh-agy-phase-tag ' + (isPlan ? 'plan' : isConsult ? 'consult' : 'review') },
-                            isPlan ? '开局规划 · Plan' : isConsult ? '途中协商 · Consult' : '结果审核 · Review',
+                            { className: 'dsh-agy-phase-tag ' + (isPlanner ? 'plan' : 'review') },
+                            isPlanner ? '规划 · Planner' : '审核 · Reviewer',
                           ),
+                          rec.round
+                            ? h('span', { className: 'dsh-agy-rec-meta' }, `第 ${rec.round} 轮`)
+                            : null,
                           h(
                             'span',
                             { className: 'dsh-agy-rec-meta' },
@@ -1629,7 +2909,7 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
                           h(CollapsibleField, {
                             label: 'D 的执行结果报告 (Execution Report)',
                             text: rec.dToA?.executionReport || '',
-                            defaultExpanded: !isPlan,
+                            defaultExpanded: !isPlanner,
                           }),
                         ),
                         // A -> D 区块
@@ -1637,7 +2917,7 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
                           'div',
                           {
                             className:
-                              'dsh-agy-msg-box a2d' + (verdict === 'CHANGES_REQUESTED' ? ' changes' : ''),
+                              'dsh-agy-msg-box a2d' + (v === 'needs_revision' ? ' changes' : ''),
                           },
                           h(
                             'div',
@@ -1649,14 +2929,16 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
                           ),
                           isReplied
                             ? h(CollapsibleField, {
-                                label: isPlan ? 'A 提交的任务规划方案' : isConsult ? 'A 的途中协商解答与决策建议' : 'A 的最终审核结论与修改建议',
+                                label: isPlanner ? '规划 agent 的 02 / 03 交付说明' : '审核 agent 的判定与 findings',
                                 text: rec.aToD?.content || '',
                                 defaultExpanded: true,
                               })
                             : h(
                                 'div',
                                 { className: 'dsh-agy-rec-meta' },
-                                'Agent A 正在后台处理该请求，完成后回复内容将实时显示在此处…',
+                                isPlanner
+                                  ? '规划 agent 正在拆解任务，交付后在此显示说明…'
+                                  : '审核 agent 正在核对需求与仓库产物，判定后在此显示…',
                               ),
                         ),
                       ),

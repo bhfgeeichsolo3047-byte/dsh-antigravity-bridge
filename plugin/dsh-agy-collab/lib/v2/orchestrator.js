@@ -21,6 +21,7 @@ import {
   filePath,
   relKey,
   removeHostTree,
+  roundFileName,
   snapshotTree,
   assertSnapshotDelta,
   collectRepoGitEvidence,
@@ -110,6 +111,9 @@ export function createOrchestrator(deps = {}) {
     // 挂载时快照一次会永久冻结成空数组，applyRoleIsolation 就退化成放开全局写/执行工具。
     getKnownGlobalTools = null,
     knownGlobalTools = [],
+    // 配置可能被设置页改掉（§12.2）。传 getter 时每次都读最新值，
+    // 传静态 config 时行为与旧版一致（单测与只读场景用这个）。
+    getConfig = null,
   } = deps;
 
   /** 每次起角色前动态取一次全局工具名；没有动态来源时回退静态注入。 */
@@ -126,9 +130,23 @@ export function createOrchestrator(deps = {}) {
   }
 
   if (!dataDir) throw new Error('createOrchestrator 需要 dataDir');
-  if (!config) throw new Error('createOrchestrator 需要 config');
+  if (!config && typeof getConfig !== 'function') {
+    throw new Error('createOrchestrator 需要 config 或 getConfig');
+  }
 
-  const root = resolveWorkspaceRoot(config, { dataDir });
+  /** 当前生效的配置。设置页改盘之后，这里拿到的是新对象。 */
+  function currentConfig() {
+    if (typeof getConfig === 'function') {
+      const fresh = getConfig();
+      if (fresh) return fresh;
+    }
+    return config;
+  }
+
+  /** 工作台根目录跟着配置走：workspaceRoot 被改之后，新任务落到新根上。 */
+  function currentRoot() {
+    return resolveWorkspaceRoot(currentConfig(), { dataDir });
+  }
   const state = {
     paths: null,
     task: null,
@@ -180,6 +198,7 @@ export function createOrchestrator(deps = {}) {
 
   /** 启动时的静默清扫（§3.3）+ 本 Host 的目录骨架。 */
   function boot() {
+    const root = currentRoot();
     const swept = sweepOrphans({ root, bootId });
     const hostRoot = path.join(root, `${hostPid}-${bootId}`);
     fs.mkdirSync(hostRoot, { recursive: true });
@@ -189,13 +208,13 @@ export function createOrchestrator(deps = {}) {
 
   /** Host 退出时删自己那一整棵树（§3.3 第一行）。 */
   function shutdown() {
-    const result = removeHostTree({ root, hostPid, bootId });
+    const result = removeHostTree({ root: currentRoot(), hostPid, bootId });
     log(`[v2] shutdown removed=${result.removed} path=${result.path}`);
     return result;
   }
 
   function assertEnabled(sessionId) {
-    if (!isCollabEnabled(config, sessionId)) {
+    if (!isCollabEnabled(currentConfig(), sessionId)) {
       throw new Error(`会话 ${sessionId} 的协作开关是关的，不能启动任务`);
     }
   }
@@ -209,7 +228,7 @@ export function createOrchestrator(deps = {}) {
    * 取最大序号 +1。硬编码 seq=1 会让同会话的第 2 个任务撞进旧目录、覆盖旧产物。
    */
   function nextTaskSeq(sessionId) {
-    const sessionRoot = path.join(root, `${hostPid}-${bootId}`, String(sessionId));
+    const sessionRoot = path.join(currentRoot(), `${hostPid}-${bootId}`, String(sessionId));
     let max = 0;
     try {
       for (const entry of fs.readdirSync(sessionRoot, { withFileTypes: true })) {
@@ -226,7 +245,7 @@ export function createOrchestrator(deps = {}) {
   function startTask({ sessionId, requestText, purpose = '', taskId, repoCwd = null } = {}) {
     assertEnabled(sessionId);
     const id = taskId ? String(taskId) : makeTaskId({ now: now(), seq: nextTaskSeq(sessionId) });
-    const paths = createWorkspace({ root, hostPid, bootId, sessionId, taskId: id });
+    const paths = createWorkspace({ root: currentRoot(), hostPid, bootId, sessionId, taskId: id });
     const request = [
       '---',
       `task_id: ${id}`,
@@ -272,7 +291,7 @@ export function createOrchestrator(deps = {}) {
     if (!state.paths || !state.task) return { ok: false, error: '没有正在进行的任务' };
     const result = reduce(state.task, event, {
       now: stamp(),
-      rejectionLimit: config.rejection_limit,
+      rejectionLimit: currentConfig().rejection_limit,
       collabEnabled: true,
       ...opts,
     });
@@ -312,9 +331,9 @@ export function createOrchestrator(deps = {}) {
       [TOOL_NAMES.write]: createCollabWriteHandler({
         getTask: () => state.task,
         getRole: () => role,
-        getRoleBindingMode: () => config.role_binding_mode,
-        getReviewerMode: () => config.reviewer_mode,
-        getEstimateSubagents: () => config.estimate_subagents,
+        getRoleBindingMode: () => currentConfig().role_binding_mode,
+        getReviewerMode: () => currentConfig().reviewer_mode,
+        getEstimateSubagents: () => currentConfig().estimate_subagents,
         getPaths: () => state.paths,
         getRequirementIds: () => state.lastRequirementIds,
         applyEvent,
@@ -399,14 +418,15 @@ export function createOrchestrator(deps = {}) {
     if (!agents) return { ok: false, error: 'agents 服务不可用，进程内角色无法启动' };
     if (!state.paths) return { ok: false, error: '没有正在进行的任务' };
 
+    const cfg = currentConfig();
     const promptText = buildRolePrompt(role, {
       taskId: state.task.task_id,
       workspaceDir: state.paths.taskRoot,
       repoCwd: state.task.repo_cwd ?? null,
       round,
-      reviewerMode: config.reviewer_mode,
-      estimateSubagents: config.estimate_subagents,
-      roleBindingMode: config.role_binding_mode,
+      reviewerMode: cfg.reviewer_mode,
+      estimateSubagents: cfg.estimate_subagents,
+      roleBindingMode: cfg.role_binding_mode,
     });
 
     // 角色能用的工具：collab_write（按角色可写 slot 自动收紧）+ collab_abort。
@@ -463,7 +483,7 @@ export function createOrchestrator(deps = {}) {
       state.plannerInvocationId = spawned.sessionId ?? null;
     }
     if (role === 'reviewer') {
-      if (config.role_binding_mode === 'dual' && state.plannerInvocationId) {
+      if (currentConfig().role_binding_mode === 'dual' && state.plannerInvocationId) {
         log(`[v2] review_cold_restart planner=${state.plannerInvocationId} reviewer=${spawned.sessionId}`);
       }
       state.reviewerInvocationId = spawned.sessionId ?? null;
@@ -530,7 +550,7 @@ export function createOrchestrator(deps = {}) {
       const planVerdict = validateArtifact({
         slot: 'plan',
         text: planText,
-        estimateSubagents: config.estimate_subagents,
+        estimateSubagents: currentConfig().estimate_subagents,
       });
       if (!planVerdict.ok) return { ok: false, error: `plan.md 校验不通过：${planVerdict.errors.join('；')}` };
 
@@ -572,7 +592,7 @@ export function createOrchestrator(deps = {}) {
     if (!state.task) return { ok: false, error: '没有正在进行的任务' };
     const slot = reviewSlotFor(state.task.state, {
       round: state.task.round,
-      rejectionLimit: config.rejection_limit,
+      rejectionLimit: currentConfig().rejection_limit,
     });
     if (!slot) return { ok: false, error: `当前状态 ${state.task.state} 不是审核阶段` };
 
@@ -591,7 +611,7 @@ export function createOrchestrator(deps = {}) {
       const repoEvidence = collectRepoGitEvidence(state.task.repo_cwd, { runGit });
       const message = makeUserMessage(
         [
-          `请审核。任务 id ${state.task.task_id}，第 ${round} 轮，审核档位 ${config.reviewer_mode}。`,
+          `请审核。任务 id ${state.task.task_id}，第 ${round} 轮，审核档位 ${currentConfig().reviewer_mode}。`,
           '先读 03-任务清单/tasks.md 弄清需求与目的，再看仓库的客观产物判断是否达成。',
           `把结论写到 ${WORKSPACE_DIRS[slot]}/${fileName}。`,
           repoEvidence
@@ -625,7 +645,7 @@ export function createOrchestrator(deps = {}) {
             slot,
             text,
             round,
-            mode: config.reviewer_mode,
+            mode: currentConfig().reviewer_mode,
             requirementIds: state.lastRequirementIds,
           })
         : null;
@@ -752,7 +772,51 @@ export function createOrchestrator(deps = {}) {
   /** 当前可写 slot（给 UI 与工具说明用）。 */
   function writableSlotsNow(role) {
     if (!state.task) return [];
-    return writableSlots(role, state.task.state, { roleBindingMode: config.role_binding_mode });
+    return writableSlots(role, state.task.state, { roleBindingMode: currentConfig().role_binding_mode });
+  }
+
+  /** 六目录里每个 slot 的语义标签（运行台 E 卡第四列，§12.3）。 */
+  const SLOT_SEMANTICS = Object.freeze({
+    request: '不可变',
+    plan: '可覆盖',
+    tasks: '已冻结',
+    review: '只增不改',
+    revision: '只增不改',
+    final: '终审',
+  });
+
+  /**
+   * 某个 slot 当前该看的文件名与是否存在。
+   * review / revision 按轮次拼名：当前轮是 review-r<round>.md；
+   * revision 的轮次比当前轮小 1（第 N 轮返工读的是上一轮驳回后写的 revision-r<N-1>.md）。
+   */
+  function slotFiles(task) {
+    const round = Number(task?.round) || 1;
+    const out = [];
+    for (const slot of SLOT_ORDER) {
+      let fileName = null;
+      if (slot === 'request') fileName = 'request.md';
+      else if (slot === 'plan') fileName = 'plan.md';
+      else if (slot === 'tasks') fileName = 'tasks.md';
+      else if (slot === 'final') fileName = 'final.md';
+      else if (slot === 'review') fileName = roundFileName('review', round);
+      else if (slot === 'revision') fileName = roundFileName('revision', Math.max(1, round - 1));
+      const dir = state.paths.dirs[slot];
+      let exists = false;
+      try {
+        exists = fs.existsSync(path.join(dir, fileName));
+      } catch {
+        exists = false;
+      }
+      out.push({
+        slot,
+        dir: WORKSPACE_DIRS[slot],
+        fileName,
+        exists,
+        semantic: SLOT_SEMANTICS[slot],
+      });
+    }
+    return out;
   }
 
   /** 快照（运行台显示用）。 */
@@ -764,20 +828,26 @@ export function createOrchestrator(deps = {}) {
       state: state.task.state,
       round: state.task.round,
       rejection_count: state.task.rejection_count,
-      rejection_limit: config.rejection_limit,
+      rejection_limit: currentConfig().rejection_limit,
       overreach_count: state.task.overreach_count,
       format_violation_count: state.task.format_violation_count,
       protocol_retry_count: state.task.protocol_retry_count,
       terminal: isTerminal(state.task.state),
       task_root: state.paths.taskRoot,
       dirs: Object.fromEntries(SLOT_ORDER.map((slot) => [slot, WORKSPACE_DIRS[slot]])),
+      files: slotFiles(state.task),
       actor_session_ids: [...state.actorSessionIds],
       requirement_ids: [...state.lastRequirementIds],
     };
   }
 
   return {
-    root,
+    get root() {
+      return currentRoot();
+    },
+    get config() {
+      return currentConfig();
+    },
     bootId,
     boot,
     shutdown,
