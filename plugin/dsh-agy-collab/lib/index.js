@@ -21,6 +21,16 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import { isActorSession } from './actor-sessions.js';
+// broker 的端口归属判定与 pid 归属记录都收敛在 broker-client.js（规格 §10.2 / §10.4），
+// 这里只消费它的结论，不再自己 probe / spawn。
+import {
+  BROKER_STATE,
+  DEFAULT_BROKER_PORT,
+  ensureBroker,
+  foreignPortMessage,
+} from './broker-client.js';
+// 端口优先级与「哪些角色在进程外」的唯一实现都在 v2/config.js，这里复用而不是再写一份。
+import { externalRoles, readConfigFile, resolveBrokerPort } from './v2/config.js';
 // v2 的开关判据是全局唯一来源：v1 入口只消费它，不自己写字符串比较。
 // v2/index.js 不反向 import 本文件，静态引入无循环依赖。
 import { isV2Enabled } from './v2/index.js';
@@ -29,7 +39,6 @@ export const name = 'dsh-agy-collab';
 export const inject = ['tools', 'systemPrompt'];
 
 const BROKER_HOST = process.env.DSH_AGY_COLLAB_HOST || '127.0.0.1';
-const BROKER_PORT = Number(process.env.DSH_AGY_COLLAB_PORT || 18765);
 const DATA_DIR = path.join(os.homedir(), '.dsh', 'agy-collab');
 const STATE_FILE = path.join(DATA_DIR, 'state.json');
 const RECORDS_FILE = path.join(DATA_DIR, 'records.json');
@@ -143,32 +152,102 @@ export function setCollabEnabled(sessionId, enabled, opts = {}) {
   return next;
 }
 
+/**
+ * 当前该连哪个端口（§10.6）：env DSH_AGY_COLLAB_PORT > state.json 的 brokerPort > 18765。
+ * 每次现算而不是模块加载时算一次 —— 用户在设置页改端口后无需重启 Host。
+ */
+function currentBrokerPort() {
+  try {
+    return resolveBrokerPort(readConfigFile(resolveDataDir()), process.env);
+  } catch {
+    return DEFAULT_BROKER_PORT;
+  }
+}
+
+/**
+ * broker 运行态缓存。只在同一进程内复用：
+ *   state      最近一次 ensureBroker 的结局（attached / spawned / foreign / unreachable / missing_script）
+ *   port       上一次判定用的端口
+ *   message    异己占用或 spawn 失败时给用户看的文案
+ *   checkedAt  上一次判定的时刻，用来做失败冷却，避免每次 /state 都去 spawn 一个起不来的进程
+ */
+const brokerRuntime = {
+  state: null,
+  port: null,
+  message: null,
+  pid: null,
+  health: null,
+  checkedAt: 0,
+  inflight: null,
+};
+
+/** 失败后的冷却窗口：这段时间内不再重复 spawn，直接把上次的结论还回去。 */
+const BROKER_RETRY_COOLDOWN_MS = 15_000;
+
+/**
+ * 端口归属四步判定（§10.2）在本进程内的唯一入口。
+ *
+ * 早先这里是「probe 失败就 spawn，然后 setTimeout(400) 直接 resolve(true)」——
+ * 无论 broker 起没起来都报成功，UI 上永远显示在线。现在改成调用 broker-client 的
+ * ensureBroker：spawn 之后必须真的探到自家 /health 签名才算成功。
+ *
+ * @returns {Promise<{ state: string, port: number, message: string|null, pid: number|null, health: object|null }>}
+ */
 function ensureBrokerProcess() {
-  return new Promise((resolve) => {
-    const req = http.get(`http://${BROKER_HOST}:${BROKER_PORT}/health`, { timeout: 1000 }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+  const now = Date.now();
+  const retryable =
+    brokerRuntime.state === null
+    || brokerRuntime.state === BROKER_STATE.unreachable
+    || brokerRuntime.state === BROKER_STATE.missing_script;
+  if (retryable && brokerRuntime.state !== null && now - brokerRuntime.checkedAt < BROKER_RETRY_COOLDOWN_MS) {
+    return Promise.resolve(brokerRuntime);
+  }
+  if (brokerRuntime.inflight) return brokerRuntime.inflight;
+
+  const port = currentBrokerPort();
+  brokerRuntime.inflight = ensureBroker({
+    host: BROKER_HOST,
+    port,
+    scriptPath: BROKER_SCRIPT,
+    dataDir: resolveDataDir(),
+  })
+    .then((result) => {
+      brokerRuntime.state = result.state;
+      brokerRuntime.port = Number(result.port) || port;
+      brokerRuntime.message = result.message ?? null;
+      brokerRuntime.pid = result.pid ?? null;
+      brokerRuntime.health = result.health ?? null;
+      brokerRuntime.checkedAt = Date.now();
+      return brokerRuntime;
+    })
+    .catch((error) => {
+      brokerRuntime.state = BROKER_STATE.unreachable;
+      brokerRuntime.port = port;
+      brokerRuntime.message = String(error?.message ?? error);
+      brokerRuntime.checkedAt = Date.now();
+      return brokerRuntime;
+    })
+    .finally(() => {
+      brokerRuntime.inflight = null;
     });
-    req.on('error', () => {
-      try {
-        if (fs.existsSync(BROKER_SCRIPT)) {
-          const child = spawn(process.execPath, [BROKER_SCRIPT], {
-            detached: true,
-            stdio: 'ignore',
-            windowsHide: true,
-          });
-          child.unref();
-        }
-      } catch {
-        // ignore
-      }
-      setTimeout(() => resolve(true), 400);
-    });
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(false);
-    });
-  });
+  return brokerRuntime.inflight;
+}
+
+/** broker 是否可用（能承载 /state 与 /records 的读写）。 */
+function isBrokerOnline() {
+  return brokerRuntime.state === BROKER_STATE.attached || brokerRuntime.state === BROKER_STATE.spawned;
+}
+
+/**
+ * broker 不可用时的统一文案：异己占用给「改端口/关掉占用它的程序」，
+ * 其余情况说明是连不上而不是别人的进程。
+ */
+function brokerOfflineMessage() {
+  if (brokerRuntime.state === BROKER_STATE.foreign) {
+    return brokerRuntime.message || foreignPortMessage(brokerRuntime.port ?? currentBrokerPort());
+  }
+  if (brokerRuntime.message) return brokerRuntime.message;
+  return `无法连接到本地 A↔D 协作消息总线 (127.0.0.1:${brokerRuntime.port ?? currentBrokerPort()})`;
 }
 
 function callBroker(method, endpoint, payload, timeoutMs = 5000) {
@@ -177,7 +256,7 @@ function callBroker(method, endpoint, payload, timeoutMs = 5000) {
     const req = http.request(
       {
         hostname: BROKER_HOST,
-        port: BROKER_PORT,
+        port: currentBrokerPort(),
         path: endpoint,
         method,
         headers: payload
@@ -369,18 +448,25 @@ function installWebRoutes(ctx) {
               const sessionId = url.searchParams.get('sessionId') || '';
 
               if (sub === '/state' && (req.method === 'GET' || req.method === 'HEAD')) {
-                await ensureBrokerProcess();
-                const brokerStatus = await callBroker('GET', `/state?sessionId=${encodeURIComponent(sessionId)}`, null, 1200);
+                const runtime = await ensureBrokerProcess();
+                const brokerStatus = isBrokerOnline()
+                  ? await callBroker('GET', `/state?sessionId=${encodeURIComponent(sessionId)}`, null, 1200)
+                  : null;
                 const enabled = isCollabEnabled(sessionId);
                 const records = Array.isArray(brokerStatus?.records) ? brokerStatus.records : readLocalRecords();
                 send(200, {
                   ok: true,
                   enabled,
                   globalEnabled: readLocalState().enabled,
-                  brokerOnline: Boolean(brokerStatus?.brokerOnline),
+                  brokerOnline: Boolean(brokerStatus?.brokerOnline) || isBrokerOnline(),
                   aListening: Boolean(brokerStatus?.aListening),
                   pendingCount: Number(brokerStatus?.pendingCount || 0),
                   records,
+                  // 端口由 Host 侧现算并下发：客户端不再硬编码 18765（§10.6）。
+                  brokerPort: Number(runtime?.port) || currentBrokerPort(),
+                  brokerState: runtime?.state ?? null,
+                  brokerMessage: isBrokerOnline() ? null : brokerOfflineMessage(),
+                  brokerPid: runtime?.pid ?? null,
                 });
                 return;
               }
@@ -391,27 +477,35 @@ function installWebRoutes(ctx) {
                 const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
                 const sid = typeof body.sessionId === 'string' ? body.sessionId.trim() : sessionId;
                 const nextEnabled = setCollabEnabled(sid, typeof body.enabled === 'boolean' ? body.enabled : undefined);
-                await ensureBrokerProcess();
-                const brokerRes = await callBroker('POST', '/state', { sessionId: sid, enabled: nextEnabled }, 1500);
+                const runtime = await ensureBrokerProcess();
+                const brokerRes = isBrokerOnline()
+                  ? await callBroker('POST', '/state', { sessionId: sid, enabled: nextEnabled }, 1500)
+                  : null;
                 const records = Array.isArray(brokerRes?.records) ? brokerRes.records : readLocalRecords();
                 send(200, {
                   ok: true,
                   enabled: nextEnabled,
                   globalEnabled: nextEnabled,
-                  brokerOnline: Boolean(brokerRes?.brokerOnline ?? true),
+                  brokerOnline: Boolean(brokerRes?.brokerOnline) || isBrokerOnline(),
                   aListening: Boolean(brokerRes?.aListening),
                   records,
+                  brokerPort: Number(runtime?.port) || currentBrokerPort(),
+                  brokerState: runtime?.state ?? null,
+                  brokerMessage: isBrokerOnline() ? null : brokerOfflineMessage(),
+                  brokerPid: runtime?.pid ?? null,
                 });
                 return;
               }
 
               if (sub === '/records' && (req.method === 'GET' || req.method === 'HEAD')) {
                 await ensureBrokerProcess();
-                const brokerRecs = await callBroker('GET', '/records', null, 1200);
+                const brokerRecs = isBrokerOnline() ? await callBroker('GET', '/records', null, 1200) : null;
                 const records = Array.isArray(brokerRecs?.records) ? brokerRecs.records : readLocalRecords();
                 send(200, {
                   ok: true,
                   records,
+                  brokerPort: Number(brokerRuntime.port) || currentBrokerPort(),
+                  brokerState: brokerRuntime.state ?? null,
                 });
                 return;
               }
@@ -419,10 +513,14 @@ function installWebRoutes(ctx) {
               if (sub === '/clear' && req.method === 'POST') {
                 await ensureBrokerProcess();
                 clearLocalRecords();
-                const brokerClear = await callBroker('POST', '/records/clear', {}, 1500);
+                const brokerClear = isBrokerOnline()
+                  ? await callBroker('POST', '/records/clear', {}, 1500)
+                  : null;
                 send(200, {
                   ok: true,
                   records: Array.isArray(brokerClear?.records) ? brokerClear.records : [],
+                  brokerPort: Number(brokerRuntime.port) || currentBrokerPort(),
+                  brokerState: brokerRuntime.state ?? null,
                 });
                 return;
               }
@@ -446,7 +544,10 @@ export async function apply(ctx) {
   // 两种模式互斥：同一会话只挂一套协议，避免模型在 v2 流程里误调 v1 relay。
   const v2On = isV2Enabled(process.env);
   try {
-    // broker 无条件拉起：看板 /records 与 /state 仍由它承载（v2 下它退化为可选传输管道）。
+    // broker 只在「有进程外角色」时才需要（§10.1）：进程内三角色闭环完全不经过它。
+    // 但仍先探一次并缓存结论 —— 看板要显示总线四态（§12.4），且用户可能刚把某个角色
+    // 改成 external。探活本身不发 spawn（ensureBroker 会先 probe），代价是 1s 内的一个
+    // GET /health，比「什么都不问就显示离线」更诚实。
     ensureBrokerProcess().catch(() => {});
 
     // 1. Register conditional systemPrompt section
@@ -533,7 +634,7 @@ export async function apply(ctx) {
         );
 
         if (!res || !res.ok) {
-          const errMsg = res?.error || '无法连接到本地 A↔D 协作消息总线 (127.0.0.1:18765)。';
+          const errMsg = res?.error || `${brokerOfflineMessage()}。`;
           return {
             text: `[A↔D 后台通信提示] ${errMsg}`,
             phase,
@@ -607,6 +708,18 @@ export async function apply(ctx) {
       try {
         const { mountV2 } = await import('./v2/index.js');
         const dispose = await mountV2(ctx, {
+          // §10.3：把「外部角色要用的总线能不能用」的判定交给 Host 侧，
+          // 因为端口归属、pid 归属记录与 broker 运行态都只在这里。
+          async checkExternalRoles({ roles = [] } = {}) {
+            const runtime = await ensureBrokerProcess();
+            if (isBrokerOnline()) return { ok: true, port: runtime?.port ?? null };
+            return {
+              ok: false,
+              message: brokerOfflineMessage(),
+              state: runtime?.state ?? null,
+              roles,
+            };
+          },
           log: (msg) => {
             try {
               ctx?.logger?.info?.(msg);

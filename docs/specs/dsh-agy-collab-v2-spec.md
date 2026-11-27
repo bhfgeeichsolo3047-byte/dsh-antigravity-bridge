@@ -755,6 +755,26 @@ const LEGACY_V1_PATHS = [
 
 测试：`npm test` 跑 `test/v2/*.test.mjs` 与 `test/broker/*.test.mjs`，覆盖配置迁移、Workspace 清扫、产物校验、状态机、角色隔离、编排闭环、越权三道判据（篡改 / 删除任务 `state.json`、改目标仓库）、开关默认值、`state.json` 丢键回归、broker 派发死锁回归。
 
+### 13.2 第 6 步的实现状态
+
+第 6 步已实现。新增一个零业务依赖的模块，把「端口归属」这件事从散在三个文件里的硬编码收成一处：
+
+| 文件 | 承担 |
+| --- | --- |
+| `lib/broker-client.js` | `probeHealth`（`/health` 1000ms 探测，按 `service` 字段判 ok / foreign / offline）、`readPidRecord`（`broker.pid` 归属记录四态）、`clearPidRecord`、`isPidAlive`、`ensureBroker`（四步判定 + spawn 后轮询确认）、`foreignPortMessage` |
+
+`broker/broker.mjs` 侧：`/health` 响应带 `service` / `schemaVersion` / `bootId` / `startedAt` / `uptimeMs` / `idleExitMs`；`broker.pid` 写 JSON 五字段归属记录（`service` / `schemaVersion` / `pid` / `port` / `startedAt` / `bootId`）；`EADDRINUSE` 先探占用者再分流（自家 → exit 0 静默复用；异己 → exit 2 + 可诊断文案；其他错误 → exit 1），不再一律 `exit(0)`；空闲 30 分钟自退（`DSH_AGY_IDLE_EXIT_MS` 可覆盖）；`shutdown` 只删自己那份 pid 记录。
+
+六处端口硬编码全部改掉（§10.6）：`broker/broker.mjs`、`lib/index.js`、`broker/reply-request.mjs`、`broker/wait-next-request.mjs` 读 `DSH_AGY_COLLAB_PORT` > 配置 `brokerPort` > 18765；`client.js` 两处改为从 `/api/agy-collab/state` 响应的 `brokerPort` 取。
+
+实现期偏离三处：
+
+1. **`bootId` 在 broker 侧本地重写了一份。** broker 被 `scripts/install.mjs` 单独复制到 `~/.dsh/agy-collab/`，不能 import 插件模块，所以 `resolveBootId()` 在 `broker/broker.mjs` 里复制了 `lib/v2/config.js` 的同算法实现（sha256(开机分钟) 前 6 位）。两处必须同步改，否则 Host 与 broker 对「同一次开机」的判断会分叉。
+2. **`ensureBrokerProcess` 失败后带 15s 冷却。** `/state` 是看板每次刷新都会打的接口，总线不可用时如果每次刷新都真去 spawn 一遍，会变成每几秒起一个必然失败的子进程。冷却期内的调用直接返回上次的失败结论。
+3. **看板副标题从单态改成四态**（在线 / 异己占用 / 离线 / 未知）。§12.4 要求总线四态在 UI 上可分辨，原来的硬编码文案只有「在线」一种。
+
+测试：`test/broker/ownership.test.mjs` 15 个用例，覆盖 `readPidRecord` 四态、`isPidAlive` 边界、`ensureBroker` 五分支（全注入假件，不真起进程）、以及三次真起 broker 的端到端（`/health` 签名与 `broker.pid` 五字段一致、异己占用 exit 2 + stderr 文案 + 不写归属记录、同端口第二实例 exit 0 且不删第一实例的归属记录）。
+
 ---
 
 ## 14. 三条贯穿全篇的硬前提

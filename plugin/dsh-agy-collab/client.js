@@ -26,8 +26,11 @@ window.__ModuleLoader__.load({
 
     const HOST_STATE_API = '/api/agy-collab/state';
     const HOST_CLEAR_API = '/api/agy-collab/clear';
-    const DIRECT_STATE_API = 'http://127.0.0.1:18765/state';
-    const DIRECT_CLEAR_API = 'http://127.0.0.1:18765/records/clear';
+    // 直连 broker 的兜底通道：端口不再硬编码（§10.6）。Host 侧 /state 响应会下发
+    // brokerPort（env > state.json.brokerPort > 18765），这里只保留一个初始猜测。
+    const DEFAULT_BROKER_PORT = 18765;
+    const directStateApi = (port) => `http://127.0.0.1:${port || DEFAULT_BROKER_PORT}/state`;
+    const directClearApi = (port) => `http://127.0.0.1:${port || DEFAULT_BROKER_PORT}/records/clear`;
     const DRAWER_STORAGE_KEY = 'dsh.agy.collab.drawerOpen';
 
     const COLLAB_CSS = `
@@ -665,6 +668,11 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       brokerOnline: false,
       aListening: false,
       pendingCount: 0,
+      // broker 端口与四态（§12.4）：由 Host 侧 /state 响应下发，不在客户端写死。
+      brokerPort: DEFAULT_BROKER_PORT,
+      brokerState: null,
+      brokerMessage: null,
+      brokerPid: null,
       records: [],
       drawerOpen: readDrawerOpenPref(),
       sessionId: '',
@@ -678,6 +686,10 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
         brokerOnline: store.brokerOnline,
         aListening: store.aListening,
         pendingCount: store.pendingCount,
+        brokerPort: store.brokerPort,
+        brokerState: store.brokerState,
+        brokerMessage: store.brokerMessage,
+        brokerPid: store.brokerPid,
         records: store.records,
         drawerOpen: store.drawerOpen,
         sessionId: store.sessionId,
@@ -765,6 +777,12 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       store.brokerOnline = Boolean(data.brokerOnline);
       store.aListening = Boolean(data.aListening);
       store.pendingCount = Number(data.pendingCount || 0);
+      if (Number.isInteger(Number(data.brokerPort)) && Number(data.brokerPort) > 0) {
+        store.brokerPort = Number(data.brokerPort);
+      }
+      store.brokerState = typeof data.brokerState === 'string' ? data.brokerState : null;
+      store.brokerMessage = typeof data.brokerMessage === 'string' ? data.brokerMessage : null;
+      store.brokerPid = Number.isInteger(Number(data.brokerPid)) ? Number(data.brokerPid) : null;
       if (Array.isArray(data.records)) {
         store.records = data.records;
       }
@@ -773,7 +791,7 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
 
     async function refreshAll(sessionId) {
       const sid = typeof sessionId === 'string' ? sessionId : store.sessionId;
-      const data = await callEndpoint(HOST_STATE_API, DIRECT_STATE_API, 'GET', sid, null);
+      const data = await callEndpoint(HOST_STATE_API, directStateApi(store.brokerPort), 'GET', sid, null);
       if (data && data.ok) applyServerSnapshot(data);
       return data;
     }
@@ -785,7 +803,7 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
       store.enabled = want;
       notifyStore();
 
-      const data = await callEndpoint(HOST_STATE_API, DIRECT_STATE_API, 'POST', sid, {
+      const data = await callEndpoint(HOST_STATE_API, directStateApi(store.brokerPort), 'POST', sid, {
         sessionId: sid || '',
         enabled: want,
       });
@@ -799,7 +817,7 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
     }
 
     async function clearAllRecords() {
-      const data = await callEndpoint(HOST_CLEAR_API, DIRECT_CLEAR_API, 'POST', store.sessionId, {});
+      const data = await callEndpoint(HOST_CLEAR_API, directClearApi(store.brokerPort), 'POST', store.sessionId, {});
       if (data && data.ok) {
         store.records = Array.isArray(data.records) ? data.records : [];
         notifyStore();
@@ -813,6 +831,10 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
         brokerOnline: store.brokerOnline,
         aListening: store.aListening,
         pendingCount: store.pendingCount,
+        brokerPort: store.brokerPort,
+        brokerState: store.brokerState,
+        brokerMessage: store.brokerMessage,
+        brokerPid: store.brokerPid,
         records: store.records,
         drawerOpen: store.drawerOpen,
         sessionId: store.sessionId,
@@ -1341,7 +1363,15 @@ body[data-ds-dark-theme] .dsh-agy-tiny-btn {
               h(
                 'div',
                 { className: 'dsh-agy-kb-sub' },
-                h('span', null, snap.brokerOnline ? '总线 127.0.0.1:18765 在线' : '总线离线'),
+                h(
+                  'span',
+                  null,
+                  snap.brokerOnline
+                    ? `总线 127.0.0.1:${snap.brokerPort || DEFAULT_BROKER_PORT} 在线`
+                    : snap.brokerState === 'foreign'
+                      ? `总线端口 ${snap.brokerPort || DEFAULT_BROKER_PORT} 被其他程序占用`
+                      : `总线离线（127.0.0.1:${snap.brokerPort || DEFAULT_BROKER_PORT}）`,
+                ),
                 h('span', null, '·'),
                 h('span', null, snap.aListening ? 'Agent A 待命' : 'Agent A 离线/处理中'),
               ),

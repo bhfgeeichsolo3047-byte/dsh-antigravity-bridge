@@ -5,6 +5,8 @@
  * so Antigravity is automatically woken up to process the request.
  */
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +15,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BROKER_SCRIPT = path.join(__dirname, 'broker.mjs');
 const REPLY_SCRIPT_DISPLAY = path.join(__dirname, 'reply-request.mjs').replace(/\\/g, '/');
 const HOST = process.env.DSH_AGY_COLLAB_HOST || '127.0.0.1';
-const PORT = Number(process.env.DSH_AGY_COLLAB_PORT || 18765);
+const DATA_DIR = path.join(os.homedir(), '.dsh', 'agy-collab');
+
+/**
+ * 端口优先级（规格 §10.6）：env DSH_AGY_COLLAB_PORT > state.json 的 brokerPort > 18765。
+ * 两个 CLI 助手也要认这条优先级，否则用户在设置页改了端口，A 侧还在敲 18765。
+ */
+function resolvePort() {
+  const fromEnv = Number(process.env.DSH_AGY_COLLAB_PORT);
+  if (Number.isInteger(fromEnv) && fromEnv > 0 && fromEnv < 65536) return fromEnv;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf8'));
+    const fromConfig = Number(raw?.brokerPort);
+    if (Number.isInteger(fromConfig) && fromConfig > 0 && fromConfig < 65536) return fromConfig;
+  } catch {
+    // 配置文件不存在或坏了：退回默认端口，不要因此起不来。
+  }
+  return 18765;
+}
+
+const PORT = resolvePort();
 
 function ensureBrokerRunning() {
   return new Promise((resolve) => {

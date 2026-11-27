@@ -6,7 +6,11 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+
+/** 自家签名：Host 侧据此判断「端口上跑的是不是我们这份 broker」（规格 §10.2 第 2 步）。 */
+const SERVICE_NAME = 'dsh-agy-collab-broker';
+const PID_SCHEMA_VERSION = 1;
 
 const PORT = Number(process.env.DSH_AGY_COLLAB_PORT || 18765);
 const HOST = process.env.DSH_AGY_COLLAB_HOST || '127.0.0.1';
@@ -20,8 +24,63 @@ const MAX_HISTORY_LINES = 6;
 const MAX_DOC_FILES = 3;
 const BATCH_WINDOW_MS = Number(process.env.DSH_AGY_BATCH_WINDOW_MS || 250);
 const STALE_REDISPATCH_MS = Number(process.env.DSH_AGY_STALE_MS || 180_000);
+/** 空闲自退阈值（规格 §10.5）：最后一个监听者断开且无待回复请求，满 30 分钟自退。 */
+const IDLE_EXIT_MS = Number(process.env.DSH_AGY_IDLE_EXIT_MS || 30 * 60_000);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
+/**
+ * 本次开机的 boot-id（6 位十六进制）。
+ * 与 plugin/dsh-agy-collab/lib/v2/config.js 的 resolveBootId 同一算法：
+ * 同一开机的所有进程算出同一个值，重启必然变化，无需平台 API。
+ * broker 会被单独复制到 ~/.dsh/agy-collab/ 运行，不能 import 插件模块，故本地重写一份。
+ */
+function resolveBootId() {
+  const bootMs = Date.now() - os.uptime() * 1000;
+  const minute = Math.round(bootMs / 60000);
+  return createHash('sha256').update(String(minute)).digest('hex').slice(0, 6);
+}
+
+const BOOT_ID = resolveBootId();
+const STARTED_AT = Date.now();
+
+/**
+ * broker.pid 升级为 JSON 归属记录（规格 §10.4）。
+ * 三个用途：复用判据（/health 不通但 pid 活着且 startedAt 吻合 → 认为正在启动）/
+ * 残留清理（pid 不存在或 bootId 不匹配 → 上次开机遗留，删）/ 设置页显示。
+ */
+function writePidFile() {
+  const payload = {
+    service: SERVICE_NAME,
+    schemaVersion: PID_SCHEMA_VERSION,
+    pid: process.pid,
+    port: PORT,
+    startedAt: STARTED_AT,
+    bootId: BOOT_ID,
+  };
+  try {
+    const tmp = `${PID_FILE}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+    fs.renameSync(tmp, PID_FILE);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * 退出时清掉自己的归属记录：只删属于本进程的那一份。
+ * 不判断归属就删，会把后来启动的另一个 broker 的 pid 文件误删。
+ */
+function removePidFileIfOwn() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(PID_FILE, 'utf8'));
+    if (raw && Number(raw.pid) === process.pid && Number(raw.startedAt) === STARTED_AT) {
+      fs.unlinkSync(PID_FILE);
+    }
+  } catch {
+    // ignore
+  }
+}
 
 /**
  * 读 state.json 的完整原始对象（含 v2 的 schema_version / roles / workspaceRoot 等键）。
@@ -351,6 +410,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   const pathname = url.pathname;
+  // 除只读探活外，任何一次交互都算活动：空闲自退的计时器靠它复位（§10.5）。
+  if (pathname !== '/health' && pathname !== '/status') touchActivity();
 
   try {
     // 1. Health & status
@@ -368,9 +429,16 @@ const server = http.createServer(async (req, res) => {
         }));
       sendJson(res, 200, {
         ok: true,
+        // 自家签名：Host 侧只认这个字段判断「端口上跑的是不是我们这份 broker」（§10.2 第 2 步）。
+        service: SERVICE_NAME,
+        schemaVersion: PID_SCHEMA_VERSION,
         brokerOnline: true,
         pid: process.pid,
         port: PORT,
+        bootId: BOOT_ID,
+        startedAt: STARTED_AT,
+        uptimeMs: Date.now() - STARTED_AT,
+        idleExitMs: IDLE_EXIT_MS,
         enabled: isSessionEnabled(sessionId),
         globalEnabled: Boolean(collabState.enabled),
         aListening: aListeners.size > 0,
@@ -765,19 +833,101 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+/**
+ * 端口被占用时**不再静默退出**（规格 §12.4）。
+ * 先探一次 /health 判断占用者是不是我们自己的另一份 broker：
+ *   - 是自家 → 说明已经有实例在跑，本进程无事可做，正常退出 0；
+ *   - 是异己 → 打印可诊断的错误并以 2 退出，让 Host 侧能上抛「端口被其他程序占用」。
+ */
+function probeOccupant(cb) {
+  const req = http.get(`http://${HOST}:${PORT}/health`, { timeout: 1000 }, (res) => {
+    const chunks = [];
+    res.on('data', (c) => chunks.push(c));
+    res.on('end', () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        cb(body && body.service === SERVICE_NAME ? 'self' : 'foreign');
+      } catch {
+        cb('foreign');
+      }
+    });
+  });
+  req.on('error', () => cb('unknown'));
+  req.on('timeout', () => {
+    req.destroy();
+    cb('unknown');
+  });
+}
+
 server.on('error', (err) => {
   if (err && err.code === 'EADDRINUSE') {
-    // Already running on this port
-    process.exit(0);
+    probeOccupant((kind) => {
+      if (kind === 'self') {
+        console.log(
+          `[agy-collab-broker] 端口 ${PORT} 已有本服务的另一实例在跑，本次启动退出（pid=${process.pid}）`,
+        );
+        process.exit(0);
+      }
+      console.error(
+        `[agy-collab-broker] 端口 ${PORT} 被其他程序占用（占用者不是 ${SERVICE_NAME}）。` +
+          '请在设置页改端口或关闭占用它的程序。',
+      );
+      process.exit(2);
+    });
+    return;
   }
+  console.error(`[agy-collab-broker] 启动失败：${err?.message || err}`);
   process.exit(1);
 });
 
 server.listen(PORT, HOST, () => {
+  writePidFile();
+  console.log(
+    `[agy-collab-broker] listening on http://${HOST}:${PORT} (pid=${process.pid}, bootId=${BOOT_ID})`,
+  );
+});
+
+/**
+ * 机器级服务的空闲自退（规格 §10.5）。
+ * 判据三条同时成立才计时：没有 A 侧监听者、没有待回复请求、距最后一次活动超过阈值。
+ * 只要还有监听者或挂着的请求就绝不退 —— 退掉会把外部角色瞬间断线。
+ */
+let lastActivityAt = Date.now();
+const touchActivity = () => {
+  lastActivityAt = Date.now();
+};
+
+setInterval(() => {
+  if (aListeners.size > 0) {
+    touchActivity();
+    return;
+  }
+  const pending = [...requests.values()].filter((r) => r && r.status !== 'replied');
+  if (pending.length > 0) {
+    touchActivity();
+    return;
+  }
+  if (Date.now() - lastActivityAt >= IDLE_EXIT_MS) {
+    console.log(`[agy-collab-broker] 空闲 ${Math.round(IDLE_EXIT_MS / 60000)} 分钟，自动退出（pid=${process.pid}）`);
+    shutdown(0);
+  }
+}, Math.min(60_000, Math.max(1000, Math.floor(IDLE_EXIT_MS / 4)))).unref?.();
+
+let shuttingDown = false;
+function shutdown(code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  removePidFileIfOwn();
   try {
-    fs.writeFileSync(PID_FILE, String(process.pid), 'utf8');
+    server.close();
   } catch {
     // ignore
   }
-  console.log(`[agy-collab-broker] listening on http://${HOST}:${PORT} (pid=${process.pid})`);
-});
+  // 兜底：server.close() 等长连接自然结束时可能永不回调
+  setTimeout(() => process.exit(code), 200).unref?.();
+}
+
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => shutdown(0));
+}
+process.on('exit', () => removePidFileIfOwn());

@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  externalRoles,
   migrateConfigIfNeeded,
   readConfigFile,
   resolveBootId,
@@ -140,6 +141,17 @@ export async function mountV2(ctx, opts = {}) {
   const dataDir = opts.dataDir
     ?? (env.DSH_AGY_COLLAB_DATA_DIR ? path.resolve(env.DSH_AGY_COLLAB_DATA_DIR) : null)
     ?? path.join(os.homedir(), '.dsh', 'agy-collab');
+  /**
+   * 外部角色可用性检查（§10.3）。进程内三角色闭环不经过 broker，所以只有配置里
+   * 真有 carrier === 'external' 的角色时才需要它；一旦需要而总线不可用，
+   * **必须在 drafting 之前拒启**，不能静默回落到进程内 —— 静默回落会悄悄把审核者
+   * 换成另一个实例，用户以为还是外部 A 在审。
+   *
+   * 由 Host 侧注入（lib/index.js 持有端口归属判定与 broker 运行态缓存）；
+   * 未注入时返回 ok:true，保持本模块可单测。
+   */
+  const checkExternalRoles = opts.checkExternalRoles ?? null;
+
   const log = opts.log ?? ((msg) => {
     try {
       ctx?.logger?.info?.(msg);
@@ -281,6 +293,22 @@ export async function mountV2(ctx, opts = {}) {
     const hostHandlers = {
       [START_TOOL_NAME]: async (args = {}, exec = null) => {
         const sessionId = resolveSessionId(args, exec);
+        // §10.3：配了外部角色而总线不可用 → 在 drafting 之前拒启。
+        const external = externalRoles(config);
+        if (external.length > 0 && typeof checkExternalRoles === 'function') {
+          const gate = await checkExternalRoles({ roles: external });
+          if (!gate?.ok) {
+            return {
+              ok: false,
+              message: [
+                `拒绝启动：角色 ${external.join(' / ')} 绑到了进程外，但本地协作总线不可用。`,
+                gate?.message ? `原因：${gate.message}` : '',
+                '处理方式：修好总线，或把该角色的载体改回 in-process / session 后再启动。',
+                '（不会自动回落到进程内 —— 那会悄悄换掉审核者。）',
+              ].filter(Boolean).join('\n'),
+            };
+          }
+        }
         const orch = orchestratorFor(sessionId);
         if (!orch) return { ok: false, message: '拿不到会话 id，无法定位工作台' };
         // 路由在调用处现算成纯对象：编排器不持有 exec，也不缓存路由。
